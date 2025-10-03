@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
+import torch.optim as optim
+import gym
 
 
 # Universe of tickers
@@ -67,7 +69,22 @@ def fetch_and_preprocess_data(number, start_date, end_date):
 
 
 def RL_agent(returns) : 
-    pass
+    class PolicyNetwork(nn.Module):
+        def __init__(self, input_dim, output_dim):
+            super(PolicyNetwork, self).__init__()
+            self.fc = nn.Sequential(
+                nn.Linear(input_dim, 128),
+                nn.ReLU(),
+                nn.Linear(128, output_dim),
+                nn.Softmax(dim=-1)
+            )
+
+        def forward(self, x):
+            return self.fc(x)
+        
+        def train(self) :
+            pass
+    
 
 
 if __name__ == "__main__":
