@@ -169,9 +169,10 @@ class StockPortfolioEnv(gym.Env):
             self.date_memory.append(self.unique_dates[self.day])
             self.asset_memory.append(new_portfolio_value)
 
-            # Hyperparameters
-            risk_window = 20      # rolling window for volatility
-            risk_aversion = 0.1   # λ 
+            # Enhanced reward with concentration penalty
+            risk_window = 20
+            risk_aversion = 0.1
+            concentration_bonus = 0.05  # Bonus for non-uniform allocations
 
             returns = np.array(self.portfolio_return_memory[-risk_window:])
 
@@ -182,8 +183,14 @@ class StockPortfolioEnv(gym.Env):
 
             # Mean-variance utility
             risk_adjusted_reward = portfolio_return - risk_aversion * volatility
-
-            self.reward = risk_adjusted_reward * self.reward_scaling
+            
+            # Add concentration bonus (penalize uniform distributions)
+            # Calculate how far from uniform (1/N) the weights are
+            uniform_weight = 1.0 / self.stock_dim
+            weight_deviation = np.sum(np.abs(weights - uniform_weight))
+            concentration_reward = concentration_bonus * weight_deviation
+            
+            self.reward = (risk_adjusted_reward + concentration_reward) * self.reward_scaling
 
             
             return self.state, self.reward, self.terminal, False, {}
@@ -621,7 +628,7 @@ if __name__ == "__main__":
         hmax=100,  # not used in portfolio allocation
         initial_amount=INITIAL_AMOUNT,
         transaction_cost_pct=0.001,
-        reward_scaling=1.0,
+        reward_scaling=2.0,
         state_space=state_space,
         action_space=stock_dim,
         tech_indicator_list=tech_indicators,
@@ -642,12 +649,12 @@ if __name__ == "__main__":
     
     actor, critic, rewards = train_a2c(
         env=env,
-        epochs=300,
-        lr=3e-2,
+        epochs=500,  # Increased from 300 for better convergence with 17 stocks
+        lr=1e-3,  # Reduced from 3e-2 for more stable learning
         gamma=0.99,
         value_coef=0.5,
-        entropy_coef=0.005,  # Reduced from 0.01 to allow more concentrated positions
-        print_every=30,
+        entropy_coef=0.0,  # REMOVED entropy bonus to allow concentrated positions
+        print_every=50,
         device=device
     )
     
