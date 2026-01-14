@@ -137,9 +137,9 @@ class StockPortfolioEnv(gym.Env):
         
         else:
             # actions are the portfolio weights
-            # normalize to sum of 1
+            # normalize to sum of 1 with maximum allocation constraint
             weights = np.array(actions)
-            weights = np.clip(weights, 0, 1)
+            weights = np.clip(weights, 0, 0.25)  # Max 25% per stock (prevent over-concentration)
             weights = weights / (weights.sum() + 1e-8)
             
             self.actions_memory.append(weights)
@@ -172,7 +172,7 @@ class StockPortfolioEnv(gym.Env):
             # Enhanced reward with concentration penalty
             risk_window = 20
             risk_aversion = 0.1
-            concentration_bonus = 0.10 # Bonus for non-uniform allocations
+            concentration_bonus = 0.005 # Bonus for non-uniform allocations
 
             returns = np.array(self.portfolio_return_memory[-risk_window:])
 
@@ -362,7 +362,7 @@ def add_covariance_matrix(df, lookback=252):
 # ============================================================================
 class Actor(nn.Module):
     """Actor network outputs portfolio weights using Softmax (replaces Dirichlet)"""
-    def __init__(self, input_dim, num_assets, hidden=256, temperature=0.5):
+    def __init__(self, input_dim, num_assets, hidden=256, temperature=1.2):
         super().__init__()
         self.temperature = temperature
         self.net = nn.Sequential(
@@ -636,7 +636,7 @@ if __name__ == "__main__":
         hmax=100,  # not used in portfolio allocation
         initial_amount=INITIAL_AMOUNT,
         transaction_cost_pct=0.001,
-        reward_scaling=1.5,
+        reward_scaling=1.0,
         state_space=state_space,
         action_space=stock_dim,
         tech_indicator_list=tech_indicators,
@@ -657,7 +657,7 @@ if __name__ == "__main__":
     
     actor, critic, rewards = train_a2c(
         env=env,
-        epochs=500,  # Increased from 300 for better convergence with 17 stocks
+        epochs=300,  # Increased from 300 for better convergence with 17 stocks
         lr=1e-3,  # Reduced from 3e-2 for more stable learning
         gamma=0.99,
         value_coef=0.5,
