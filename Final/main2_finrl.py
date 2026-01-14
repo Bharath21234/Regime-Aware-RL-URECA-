@@ -551,8 +551,38 @@ def plot_training_progress(rewards, save_path='results/training_progress.png'):
 # Main Execution
 # ============================================================================
 if __name__ == "__main__":
-    # Configuration
-    TICKER_LIST = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA']
+    # Configuration - Diversified Portfolio Across Sectors
+    # This provides lower correlation and allows agent to learn meaningful allocations
+    TICKER_LIST = [
+        # Technology (30%)
+        'AAPL',   # Apple - Consumer Electronics
+        'MSFT',   # Microsoft - Software
+        'NVDA',   # Nvidia - Semiconductors
+        'GOOGL',  # Google - Internet
+        'META',   # Meta - Social Media
+        
+        # Healthcare (20%)
+        'JNJ',    # Johnson & Johnson - Pharmaceuticals
+        'UNH',    # UnitedHealth - Health Insurance
+        'PFE',    # Pfizer - Biotech
+        
+        # Finance (20%)
+        'JPM',    # JPMorgan - Banking
+        'BAC',    # Bank of America - Banking
+        'GS',     # Goldman Sachs - Investment Banking
+        
+        # Energy (10%)
+        'XOM',    # Exxon Mobil - Oil & Gas
+        'CVX',    # Chevron - Oil & Gas
+        
+        # Consumer (10%)
+        'WMT',    # Walmart - Retail
+        'PG',     # Procter & Gamble - Consumer Goods
+        
+        # Industrials (10%)
+        'BA',     # Boeing - Aerospace
+        'CAT',    # Caterpillar - Heavy Machinery
+    ]
     START_DATE = '2020-01-01'
     END_DATE = '2023-12-31'
     LOOKBACK = 60  # Reduced from 252 for shorter time series
@@ -616,7 +646,7 @@ if __name__ == "__main__":
         lr=3e-2,
         gamma=0.99,
         value_coef=0.5,
-        entropy_coef=0.01,
+        entropy_coef=0.005,  # Reduced from 0.01 to allow more concentrated positions
         print_every=30,
         device=device
     )
