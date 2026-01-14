@@ -172,7 +172,7 @@ class StockPortfolioEnv(gym.Env):
             # Enhanced reward with concentration penalty
             risk_window = 20
             risk_aversion = 0.1
-            concentration_bonus = 0.05  # Bonus for non-uniform allocations
+            concentration_bonus = 0.10 # Bonus for non-uniform allocations
 
             returns = np.array(self.portfolio_return_memory[-risk_window:])
 
@@ -361,9 +361,10 @@ def add_covariance_matrix(df, lookback=252):
 # Actor-Critic Networks
 # ============================================================================
 class Actor(nn.Module):
-    """Actor network outputs portfolio weights using Dirichlet distribution"""
-    def __init__(self, input_dim, num_assets, hidden=256):
+    """Actor network outputs portfolio weights using Softmax (replaces Dirichlet)"""
+    def __init__(self, input_dim, num_assets, hidden=256, temperature=0.5):
         super().__init__()
+        self.temperature = temperature
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden),
             nn.ReLU(),
@@ -371,12 +372,16 @@ class Actor(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, num_assets),
         )
+        
+        # Break symmetry with random initialization
+        with torch.no_grad():
+            self.net[-1].bias.data = torch.randn(num_assets) * 0.3
     
     def forward(self, x):
         logits = self.net(x)
-        # Softplus ensures positive Dirichlet concentrations
-        concentrations = torch.nn.functional.softplus(logits) + 1e-3
-        return concentrations
+        # Softmax: more sensitive to differences than Dirichlet
+        probs = torch.softmax(logits / self.temperature, dim=-1)
+        return probs
 
 
 class Critic(nn.Module):
@@ -452,11 +457,15 @@ def train_a2c(env,
             # Flatten state and convert to tensor
             s_t = torch.FloatTensor(state.flatten()).unsqueeze(0).to(device)
             
-            # Actor: sample portfolio weights from Dirichlet distribution
-            concentrations = actor(s_t)
-            dist = torch.distributions.Dirichlet(concentrations.squeeze(0))
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
+            # Actor: get portfolio weights from Softmax
+            probs = actor(s_t).squeeze(0)
+            
+            # Use probabilities directly as portfolio weights
+            action = probs
+            
+            # For policy gradient, treat as categorical distribution
+            dist = torch.distributions.Categorical(probs)
+            log_prob = dist.log_prob(dist.sample())
             entropy = dist.entropy()
             
             # Critic: estimate value of current state
@@ -517,10 +526,9 @@ def evaluate_actor(env, actor, device='cpu'):
         s_t = torch.FloatTensor(state.flatten()).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            concentrations = actor(s_t)
-            # Use mean of Dirichlet for deterministic evaluation
-            weights = concentrations.squeeze(0).cpu().numpy()
-            weights = weights / (weights.sum() + 1e-8)
+            # Get probabilities directly from Softmax (already normalized)
+            probs = actor(s_t).squeeze(0).cpu().numpy()
+            weights = probs
         
         actions_history.append(weights)
         next_state, reward, done, _, _ = env.step(weights)
@@ -628,7 +636,7 @@ if __name__ == "__main__":
         hmax=100,  # not used in portfolio allocation
         initial_amount=INITIAL_AMOUNT,
         transaction_cost_pct=0.001,
-        reward_scaling=2.0,
+        reward_scaling=1.5,
         state_space=state_space,
         action_space=stock_dim,
         tech_indicator_list=tech_indicators,
