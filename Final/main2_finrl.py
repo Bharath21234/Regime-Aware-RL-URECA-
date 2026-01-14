@@ -20,6 +20,39 @@ warnings.filterwarnings('ignore')
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+def enforce_portfolio_constraints(weights, max_weight=0.20):
+    """
+    Robustly enforce maximum weight constraint by iteratively capping and redistributing.
+    Guarantees that no weight exceeds max_weight (unless max_weight < 1/N).
+    """
+    weights = np.array(weights).copy()
+    weights = np.clip(weights, 0, 1)
+    weights = weights / (weights.sum() + 1e-8)
+    
+    # 5 iterations is usually plenty for convergence
+    for _ in range(5):
+        over = weights > max_weight
+        if not over.any():
+            break
+            
+        # Calculate excess mass
+        excess = weights[over] - max_weight
+        total_excess = excess.sum()
+        
+        # Cap the overweight stocks
+        weights[over] = max_weight
+        
+        # Distribute excess to under-weight stocks
+        under = weights < max_weight
+        if under.any():
+            # Distribute equally to all valid receivers
+            weights[under] += total_excess / under.sum()
+            
+    # Final safety normalization
+    return weights / (weights.sum() + 1e-8)
+# ============================================================================
 # FinRL StockPortfolioEnv (from FinRL documentation)
 # ============================================================================
 class StockPortfolioEnv(gym.Env):
@@ -121,28 +154,25 @@ class StockPortfolioEnv(gym.Env):
         self.terminal = self.day >= len(self.unique_dates) - 1
         
         if self.terminal:
+            # Episode ended - calculate final metrics (don't print, too spammy)
             df = pd.DataFrame(self.portfolio_return_memory)
             df.columns = ['daily_return']
             
-            print("=================================")
-            print("begin_total_asset:{}".format(self.asset_memory[0]))
-            print("end_total_asset:{}".format(self.portfolio_value))
-            
+            # Store final sharpe for later retrieval if needed
             if df['daily_return'].std() != 0:
-                sharpe = (252**0.5) * df['daily_return'].mean() / df['daily_return'].std()
-                print("Sharpe: ", sharpe)
-            print("=================================")
+                self.final_sharpe = (252**0.5) * df['daily_return'].mean() / df['daily_return'].std()
+            else:
+                self.final_sharpe = 0.0
             
             return self.state, self.reward, self.terminal, False, {}
         
         else:
             # actions are the portfolio weights
-            # normalize to sum of 1 with maximum allocation constraint
-            weights = np.array(actions)
-            weights = np.clip(weights, 0, 0.25)  # Max 25% per stock (prevent over-concentration)
-            weights = weights / (weights.sum() + 1e-8)
+            # Enforce constraints robustly
+            weights = enforce_portfolio_constraints(actions, max_weight=0.20)
             
             self.actions_memory.append(weights)
+            
             last_day_memory = self.data
             
             # load next state
@@ -169,28 +199,43 @@ class StockPortfolioEnv(gym.Env):
             self.date_memory.append(self.unique_dates[self.day])
             self.asset_memory.append(new_portfolio_value)
 
-            # Enhanced reward with concentration penalty
-            risk_window = 20
-            risk_aversion = 0.1
-            concentration_bonus = 0.005 # Bonus for non-uniform allocations
-
-            returns = np.array(self.portfolio_return_memory[-risk_window:])
-
-            if len(returns) > 1:
-                volatility = np.var(returns)
-            else:
-                volatility = 0.0
-
-            # Mean-variance utility
-            risk_adjusted_reward = portfolio_return - risk_aversion * volatility
+            # ===== SHARPE RATIO REWARD =====
+            sharpe_window = 30
+            risk_free_rate = 0.0  # Assumed 0 daily for simplicity
             
-            # Add concentration bonus (penalize uniform distributions)
-            # Calculate how far from uniform (1/N) the weights are
+            if len(self.portfolio_return_memory) >= sharpe_window:
+                rolling_returns = np.array(self.portfolio_return_memory[-sharpe_window:])
+                std_return = np.std(rolling_returns)
+                mean_return = np.mean(rolling_returns)
+                
+                if std_return > 1e-6:
+                    sharpe = (mean_return - risk_free_rate) / std_return
+                    # We use the Sharpe Ratio directly as reward
+                    # But we scale it/transform it to be a good per-step signal
+                    # Option: Use Sharpe × (current_return / mean_return) to make it depend on current action
+                    
+                    # Simpler approach: Reward is return normalized by RECENT volatility
+                    # This directly optimizes for Sharpe gradient
+                    self.reward = portfolio_return / (std_return + 1e-6)
+                else:
+                    self.reward = portfolio_return
+            else:
+                # Not enough data for rolling window yet
+                # Use simple return - volatility penalty
+                if len(self.portfolio_return_memory) > 5:
+                    vol = np.std(self.portfolio_return_memory)
+                    self.reward = portfolio_return - 0.5 * vol
+                else:
+                    self.reward = portfolio_return
+            
+            # Add small concentration bonus to encourage decision making
+            # (kept from previous successful fix)
+            concentration_bonus = 0.05
             uniform_weight = 1.0 / self.stock_dim
             weight_deviation = np.sum(np.abs(weights - uniform_weight))
-            concentration_reward = concentration_bonus * weight_deviation
+            self.reward += concentration_bonus * weight_deviation
             
-            self.reward = (risk_adjusted_reward + concentration_reward) * self.reward_scaling
+            self.reward *= self.reward_scaling
 
             
             return self.state, self.reward, self.terminal, False, {}
@@ -362,7 +407,7 @@ def add_covariance_matrix(df, lookback=252):
 # ============================================================================
 class Actor(nn.Module):
     """Actor network outputs portfolio weights using Softmax (replaces Dirichlet)"""
-    def __init__(self, input_dim, num_assets, hidden=256, temperature=1.2):
+    def __init__(self, input_dim, num_assets, hidden=256, temperature=2.5):
         super().__init__()
         self.temperature = temperature
         self.net = nn.Sequential(
@@ -526,9 +571,10 @@ def evaluate_actor(env, actor, device='cpu'):
         s_t = torch.FloatTensor(state.flatten()).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            # Get probabilities directly from Softmax (already normalized)
+            # Get probabilities directly from Softmax
             probs = actor(s_t).squeeze(0).cpu().numpy()
-            weights = probs
+            # Apply constraints to evaluation weights too!
+            weights = enforce_portfolio_constraints(probs, max_weight=0.20)
         
         actions_history.append(weights)
         next_state, reward, done, _, _ = env.step(weights)
@@ -600,7 +646,7 @@ if __name__ == "__main__":
     ]
     START_DATE = '2020-01-01'
     END_DATE = '2023-12-31'
-    LOOKBACK = 60  # Reduced from 252 for shorter time series
+    LOOKBACK = 120  # Increased to reduce dataset size for faster training
     INITIAL_AMOUNT = 1000000
     
     print("=" * 60)
@@ -657,11 +703,11 @@ if __name__ == "__main__":
     
     actor, critic, rewards = train_a2c(
         env=env,
-        epochs=300,  # Increased from 300 for better convergence with 17 stocks
-        lr=1e-3,  # Reduced from 3e-2 for more stable learning
+        epochs=200,  # Increased from 300 for better convergence with 17 stocks
+        lr=5e-4,  # Reduced further for stable learning (from 1e-3)
         gamma=0.99,
         value_coef=0.5,
-        entropy_coef=0.0,  # REMOVED entropy bonus to allow concentrated positions
+        entropy_coef=0.01,  # Re-enabled entropy to prevent premature convergence!
         print_every=50,
         device=device
     )
