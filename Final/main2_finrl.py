@@ -171,7 +171,7 @@ class StockPortfolioEnv(gym.Env):
 
             # Hyperparameters
             risk_window = 20      # rolling window for volatility
-            risk_aversion = 0.1   # λ (tune this!)
+            risk_aversion = 0.1   # λ 
 
             returns = np.array(self.portfolio_return_memory[-risk_window:])
 
