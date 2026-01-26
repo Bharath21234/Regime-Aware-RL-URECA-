@@ -47,8 +47,14 @@ def enforce_portfolio_constraints(weights, max_weight=0.20):
         # Distribute excess to under-weight stocks
         under = weights < max_weight
         if under.any():
-            # Distribute equally to all valid receivers
-            weights[under] += total_excess / under.sum()
+            # Distribute proportionally to preserve relative preferences
+            # (e.g. if A was 8% and B was 2%, A gets 4x more excess than B)
+            current_mass = weights[under].sum()
+            if current_mass > 0:
+                weights[under] += total_excess * (weights[under] / current_mass)
+            else:
+                # Fallback to equal if all under-weights are 0
+                weights[under] += total_excess / under.sum()
             
     # Final safety normalization
     return weights / (weights.sum() + 1e-8)
@@ -449,7 +455,7 @@ class Critic(nn.Module):
 # A2C Training Loop
 # ============================================================================
 def train_a2c(env,
-              epochs=300,
+              epochs=200,
               lr=3e-2,
               gamma=0.99,
               value_coef=0.5,
