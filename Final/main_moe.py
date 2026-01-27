@@ -74,14 +74,21 @@ def train():
     gamma = 0.99
     
     print(f"Starting MoE Training on {DEVICE}...")
+    batch_size = 64
     for ep in range(epochs):
         state = env.reset()
         done = False
         ep_reward = 0
         
+        # Rollout buffers
+        log_probs = []
+        values = []
+        rewards = []
+        masks = []
+        entropies = []
+        
         while not done:
             s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            
             alpha = actor(s_tensor)
             value = critic(s_tensor)
             
@@ -92,25 +99,47 @@ def train():
             action = weights.detach().cpu().numpy()[0]
             next_state, reward, done, _ = env.step(action)
             
-            with torch.no_grad():
-                ns_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                next_value = critic(ns_tensor) if not done else torch.zeros(1, device=DEVICE)
-            
-            advantage = reward + gamma * next_value - value
-            
-            actor_loss = -(log_prob * advantage.detach())
-            critic_loss = advantage.pow(2)
-            entropy = dist.entropy()
-            
-            loss = actor_loss + 0.5 * critic_loss - 0.05 * entropy
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Store in buffers
+            log_probs.append(log_prob)
+            values.append(value)
+            rewards.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
+            masks.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
+            entropies.append(dist.entropy())
             
             state = next_state
             ep_reward += reward
             
+            # Batch Update
+            if len(rewards) >= batch_size or done:
+                # Calculate returns and advantages
+                with torch.no_grad():
+                    ns_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                    next_value = critic(ns_tensor) if not done else torch.zeros(1, device=DEVICE)
+                
+                returns = []
+                R = next_value
+                for r, m in zip(reversed(rewards), reversed(masks)):
+                    R = r + gamma * R * m
+                    returns.insert(0, R)
+                
+                returns = torch.cat(returns)
+                vals = torch.cat(values)
+                advantages = returns - vals
+                
+                l_probs = torch.cat(log_probs)
+                ents = torch.cat(entropies)
+                
+                actor_loss = -(l_probs * advantages.detach()).mean()
+                critic_loss = advantages.pow(2).mean()
+                loss = actor_loss + 0.5 * critic_loss - 0.05 * ents.mean()
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                # Clear buffers
+                log_probs, values, rewards, masks, entropies = [], [], [], [], []
+                
         if ep % 20 == 0:
             print(f"Episode {ep:03d} | Reward: {ep_reward:.2f} | Final Val: {env.portfolio_value:.2f}")
 
