@@ -25,7 +25,7 @@ from hmm import MarketRegimeHMM, plot_regimes
 # ============================================================================
 # Helper Functions
 # ============================================================================
-def enforce_portfolio_constraints(weights, max_weight=0.40): # Lowered from 0.20 to 0.10 for spread
+def enforce_portfolio_constraints(weights, max_weight=0.60): # Lowered from 0.20 to 0.10 for spread
     """
     Robustly enforce maximum weight constraint by iteratively capping and redistributing.
     Guarantees that no weight exceeds max_weight (unless max_weight < 1/N).
@@ -87,7 +87,7 @@ def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_p
     self.regime_df = kwargs.get('regime_df', None)
     current_regime = 0
     if self.regime_df is not None:
-        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'regime']
+        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
         if not regime_match.empty:
             current_regime = regime_match.values[0]
     
@@ -113,7 +113,7 @@ def _step_override(self, actions):
         return self.state, self.reward, self.terminal, False, {}
     else:
         try:
-            weights = enforce_portfolio_constraints(actions, max_weight=0.40)
+            weights = enforce_portfolio_constraints(actions, max_weight=0.60)
         except:
             weights = actions
         self.actions_memory.append(weights)
@@ -127,7 +127,7 @@ def _step_override(self, actions):
         # Append regime info
         current_regime = 0
         if self.regime_df is not None:
-            regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'regime']
+            regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
             if not regime_match.empty:
                 current_regime = regime_match.values[0]
         regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
@@ -154,7 +154,7 @@ def _reset_override(self, seed=None, options=None):
     # Append regime info
     current_regime = 0
     if self.regime_df is not None:
-        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'regime']
+        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
         if not regime_match.empty:
             current_regime = regime_match.values[0]
     regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
@@ -273,6 +273,12 @@ print("\nFitting HMM for regime detection...")
 hmm_model = MarketRegimeHMM(n_regimes=3)
 hmm_model.fit(df)
 regime_df = hmm_model.predict(df)
+
+# --- NEW: Predict Future Regime ---
+print("Predicting future regimes...")
+regime_df['future_regime'] = regime_df['regime'].apply(lambda x: hmm_model.predict_next_regime(x))
+# ----------------------------------
+
 plot_regimes(df, regime_df)
 # -------------------------------
 
@@ -502,6 +508,34 @@ def plot_training_progress(rewards, save_path='results/finrlmain_training.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Training progress plot saved to {save_path}")
+    
+def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.png'):
+    """Plot portfolio allocation over time using a stacked area chart"""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs('results', exist_ok=True)
+    
+    plt.figure(figsize=(12, 7))
+    # Filter tickers that had at least some allocation (to keep legend clean)
+    ticker_cols = df_weights.columns
+    # Sort by average allocation to make the plot look better
+    avg_alloc = df_weights.mean().sort_values(ascending=False)
+    sorted_tickers = avg_alloc.index.tolist()
+    
+    plt.stackplot(df_weights.index, 
+                  [df_weights[tic] for tic in sorted_tickers], 
+                  labels=sorted_tickers, 
+                  alpha=0.8)
+    
+    plt.title('Portfolio Allocation History (Weight Evolution)', fontsize=14)
+    plt.xlabel('Date / Step', fontsize=12)
+    plt.ylabel('Weight', fontsize=12)
+    # Put legend outside
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, ncol=2)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Allocation history plot saved to {save_path}")
 
 # ============================================================================
 # Train Agent
@@ -516,6 +550,7 @@ print("\n[Evaluating trained agent...]")
 state, _ = env.reset()
 done = False
 final_weights = None
+all_weights = []
 
 while not done:
     s = torch.tensor(state.flatten(), dtype=torch.float32).unsqueeze(0).to(DEVICE)
@@ -526,10 +561,18 @@ while not done:
         weights = (alpha / alpha.sum(dim=-1, keepdim=True)).cpu().numpy()[0]
              
         # Apply constraints for evaluation
-        weights = enforce_portfolio_constraints(weights, max_weight=0.40)
+        weights = enforce_portfolio_constraints(weights, max_weight=0.60)
         final_weights = weights # Keep track of last weights
+        all_weights.append(weights)
         
     state, _, done, _, _ = env.step(weights)
+
+# Plot allocation history
+df_weights = pd.DataFrame(all_weights, columns=TICKER_LIST)
+# If dates are available in env, use them
+if hasattr(env, 'date_memory') and len(env.date_memory) > len(all_weights):
+    df_weights.index = env.date_memory[1:len(all_weights)+1]
+plot_portfolio_allocation(df_weights)
 
 print("=" * 60)
 print("RESULTS")

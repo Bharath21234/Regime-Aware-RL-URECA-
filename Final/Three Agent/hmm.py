@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 class MarketRegimeHMM:
-    def __init__(self, n_regimes=3):
+    def __init__(self, n_regimes=4):
         self.n_regimes = n_regimes
         self.model = hmm.GaussianHMM(
             n_components=n_regimes, 
@@ -57,6 +57,29 @@ class MarketRegimeHMM:
             mapped_regimes[regimes == state] = i
             
         return pd.DataFrame({'date': dates, 'regime': mapped_regimes})
+
+    def predict_next_regime(self, current_regime):
+        """
+        Predicts the next regime based on the transition matrix.
+        Returns the regime with the highest transition probability.
+        """
+        if not self.is_fitted:
+            raise ValueError("HMM not fitted yet.")
+        
+        # current_regime is the mapped regime index (0, 1, 2)
+        # We need to map it back to the raw state index used by hmmlearn
+        raw_state = self.vol_states[current_regime]
+        
+        # Get transition probabilities from this state
+        trans_probs = self.model.transmat_[raw_state]
+        
+        # Find raw state with highest probability
+        next_raw_state = np.argmax(trans_probs)
+        
+        # Map back to 0, 1, 2 scale
+        next_mapped_regime = np.where(self.vol_states == next_raw_state)[0][0]
+        
+        return next_mapped_regime
 
 def plot_regimes(df, regime_df, save_path='results/regimes.png'):
     import os
