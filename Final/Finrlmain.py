@@ -154,15 +154,19 @@ TICKER_LIST = [
     'XOM','CVX',
     'WMT','PG',
     'BA','CAT',
-    # Added 10 new stocks for diversity:
+    # Added even more stocks for a broader universe (~40)
     'AMZN', 'AMD', 'NFLX',  # Tech/Growth
     'V', 'HD', 'MCD',       # Consumer/Finance
     'KO', 'PEP',            # Defensive/Staples
-    'DIS', 'COST'           # Entertainment/Retail
+    'DIS', 'COST',          # Entertainment/Retail
+    'CRM', 'INTC', 'TXN',   # Semiconductors/Software
+    'GE', 'MMM', 'HON',     # Industrials
+    'C', 'GS', 'MS',        # Investment Banking
+    'ABT', 'ABBV', 'MRK'    # More Healthcare
 ]
 
-START_DATE = "2015-01-01"  # Extended history
-END_DATE   = "2024-01-01"  # More recent data
+START_DATE = "2015-01-01"
+END_DATE   = "2024-01-01"
 INITIAL_AMOUNT = 1_000_000
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -242,10 +246,9 @@ env = StockPortfolioEnv(
 # Actor-Critic Networks
 # ============================================================================
 class Actor(nn.Module):
-    """Actor network outputs portfolio weights using Softmax with Temperature"""
-    def __init__(self, input_dim, num_assets, hidden=256, temperature=0.5): # Lowered T to 0.5 for sharper decisions
+    """Actor network outputs Dirichlet concentration parameters (alpha)"""
+    def __init__(self, input_dim, num_assets, hidden=256):
         super().__init__()
-        self.temperature = temperature
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden),
             nn.ReLU(),
@@ -253,16 +256,12 @@ class Actor(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, num_assets)
         )
-        
-        # Break symmetry with random initialization
-        with torch.no_grad():
-            self.net[-1].bias.data = torch.randn(num_assets) * 0.3
 
     def forward(self, x):
+        # Softplus ensures alpha > 0. We add 1.0 to bias towards uniform initially (concentration > 1)
         logits = self.net(x)
-        # Softmax: more sensitive to differences than Dirichlet
-        weights = torch.softmax(logits / self.temperature, dim=-1)
-        return weights
+        alpha = torch.nn.functional.softplus(logits) + 1.0
+        return alpha
 
 
 class Critic(nn.Module):
@@ -285,11 +284,12 @@ class Critic(nn.Module):
 # ============================================================================
 def train_a2c(
     env,
-    epochs=400, # Increased to 400 to give time to diverge from uniform
+    epochs=200, # Reduced to 200 as requested
     gamma=0.99,
-    lr=3e-4,
+    lr=1e-4,    # Slightly lower for Dirichlet stability
     value_coef=0.5,
-    entropy_coef=0.01
+    entropy_coef=0.01,
+    batch_size=64
 ):
     obs_dim = np.prod(env.observation_space.shape)
     act_dim = env.action_space.shape[0]
@@ -309,55 +309,79 @@ def train_a2c(
         done = False
         ep_reward = 0.0
 
+        # Rollout buffer
+        log_probs = []
+        values = []
+        rewards = []
+        masks = []
+        entropies = []
+
         while not done:
             s = torch.tensor(
                 state.flatten(),
                 dtype=torch.float32
             ).unsqueeze(0).to(DEVICE)
 
-            # Actor
-            weights = actor(s)
-
-            # Critic
+            # Actor & Critic
+            alpha = actor(s)
             value = critic(s)
 
+            # Dirichlet distribution for exploration
+            dist = torch.distributions.Dirichlet(alpha)
+            # Sample weights (sum to 1)
+            weights = dist.sample()
+            log_prob = dist.log_prob(weights)
+            entropy = dist.entropy()
+
             # Environment step
-            next_state, reward, done, _, _ = env.step(
-                weights.detach().cpu().numpy()[0]
-            )
+            action = weights.detach().cpu().numpy()[0]
+            next_state, reward, done, _, _ = env.step(action)
 
-            s_next = torch.tensor(
-                next_state.flatten(),
-                dtype=torch.float32
-            ).unsqueeze(0).to(DEVICE)
+            # Store in buffer
+            log_probs.append(log_prob)
+            values.append(value)
+            rewards.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
+            masks.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
+            entropies.append(entropy)
 
-            with torch.no_grad():
-                next_value = critic(s_next) if not done else torch.zeros_like(value)
-
-            # TD target and advantage
-            td_target = reward + gamma * next_value
-            advantage = td_target - value
-
-            # ---- Losses ----
-            # Deterministic policy gradient surrogate
-            log_prob = torch.sum(torch.log(weights + 1e-8) * weights.detach())
-            entropy = -torch.sum(weights * torch.log(weights + 1e-8))
-
-            actor_loss = -log_prob * advantage.detach()
-            critic_loss = advantage.pow(2)
-
-            loss = (
-                actor_loss
-                + value_coef * critic_loss
-                - entropy_coef * entropy
-            )
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            ep_reward += reward
             state = next_state
+            ep_reward += reward
+
+            # Update if batch is full or episode ends
+            if len(rewards) >= batch_size or done:
+                with torch.no_grad():
+                    s_next = torch.tensor(
+                        next_state.flatten(),
+                        dtype=torch.float32
+                    ).unsqueeze(0).to(DEVICE)
+                    next_value = critic(s_next) if not done else torch.zeros(1, device=DEVICE)
+
+                # Calculate returns (bootstrapped)
+                returns = []
+                R = next_value.squeeze()
+                for r, m in zip(reversed(rewards), reversed(masks)):
+                    R = r + gamma * R * m
+                    returns.insert(0, R)
+                
+                returns = torch.stack(returns).squeeze()
+                values_tensor = torch.cat(values).squeeze()
+                log_probs_tensor = torch.cat(log_probs).squeeze()
+                entropies_tensor = torch.cat(entropies).squeeze()
+                
+                # Advantage
+                advantages = returns - values_tensor
+                
+                # Losses
+                actor_loss = -(log_probs_tensor * advantages.detach()).mean()
+                critic_loss = advantages.pow(2).mean()
+                loss = actor_loss + value_coef * critic_loss - entropy_coef * entropies_tensor.mean()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # Clear buffer
+                log_probs, values, rewards, masks, entropies = [], [], [], [], []
 
         rewards_history.append(ep_reward)
 
@@ -408,11 +432,11 @@ while not done:
     s = torch.tensor(state.flatten(), dtype=torch.float32).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         # Use Softmax Actor logic if applicable, otherwise default
-        if hasattr(actor, 'temperature'):
-             # Forward pass returns probabilities directly
-             weights = actor(s).cpu().numpy()[0]
-        else:
-             weights = actor(s).cpu().numpy()[0]
+    with torch.no_grad():
+        # Use Dirichlet Actor logic (concentration parameters)
+        alpha = actor(s)
+        # Use MEAN of Dirichlet for evaluation (deterministic)
+        weights = (alpha / alpha.sum(dim=-1, keepdim=True)).cpu().numpy()[0]
              
         # Apply constraints for evaluation
         weights = enforce_portfolio_constraints(weights, max_weight=0.20)
