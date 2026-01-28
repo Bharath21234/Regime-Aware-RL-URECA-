@@ -94,6 +94,9 @@ def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_p
     self.state = np.vstack([self.covs, tech_array]).astype(np.float32)
     regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
     self.state = np.vstack([self.state, regime_row])
+    
+    # NEW: State Memory for temporal stacking
+    self.state_memory = [self.state] * self.lookback
 
     self.terminal = False
     self.turbulence_threshold = turbulence_threshold
@@ -132,6 +135,10 @@ def _step_override(self, actions):
                 current_regime = regime_match.values[0]
         regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
         self.state = np.vstack([self.state, regime_row])
+        
+        # Update state memory
+        self.state_memory.pop(0)
+        self.state_memory.append(self.state)
 
         portfolio_return = sum(((self.data.close.values / last_day_memory.close.values) - 1) * weights)
         self.portfolio_return_memory.append(portfolio_return)
@@ -139,7 +146,7 @@ def _step_override(self, actions):
         self.portfolio_value = self.portfolio_value * (1 + portfolio_return)
         self.asset_memory.append(self.portfolio_value)
         self.reward = portfolio_return * self.reward_scaling
-        return self.state, self.reward, self.terminal, False, {}
+        return np.array(self.state_memory), self.reward, self.terminal, False, {}
 
 def _reset_override(self, seed=None, options=None):
     if seed is not None:
@@ -159,13 +166,16 @@ def _reset_override(self, seed=None, options=None):
             current_regime = regime_match.values[0]
     regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
     self.state = np.vstack([self.state, regime_row])
+    
+    # NEW: State Memory
+    self.state_memory = [self.state] * self.lookback
 
     self.portfolio_value = self.initial_amount
     self.terminal = False
     self.portfolio_return_memory = [0]
     self.actions_memory = [[1/self.stock_dim]*self.stock_dim]
     self.date_memory = [self.unique_dates[self.day]]
-    return self.state, {}
+    return np.array(self.state_memory), {}
 
 def _seed_override(self, seed=None):
     self.np_random, seed = seeding.np_random(seed)
@@ -263,7 +273,7 @@ def add_covariance_matrix(df, lookback=252):
     return df
 
 print("\nComputing covariance matrix...")
-df = add_covariance_matrix(df, lookback=252)
+df = add_covariance_matrix(df, lookback=20)
 print(f"Data shape with covariance: {df.shape}")
 
 print("="*50)
@@ -300,7 +310,7 @@ env = StockPortfolioEnv(
     state_space=len(TICKER_LIST),
     action_space=len(TICKER_LIST),
     tech_indicator_list=["macd", "rsi", "cci", "adx"],
-    lookback=252,
+    lookback=20,
     day=0,
     regime_df=regime_df # Pass regimes to env
 )
@@ -308,7 +318,7 @@ env = StockPortfolioEnv(
 # Update observation space shape in env object manually due to augmentation
 env.observation_space = spaces.Box(
     low=-np.inf, high=np.inf, 
-    shape=(env.state.shape[0], env.state.shape[1]), 
+    shape=(env.lookback, env.state.shape[0], env.state.shape[1]), 
     dtype=np.float32
 )
 
@@ -340,9 +350,11 @@ class Actor(nn.Module):
         # Better: keep track of where the regime info is. 
         # In our env, it's the last row of the matrix.
         
-        # Assuming x is flattened [batch, total_features]
-        # Regime info is in the last n_assets elements (since we appended a full row)
-        # We take the mean of the last assets to get the regime (they should all be the same)
+        # Selection logic (Multi-agent routing)
+        # Regime info is in the last row of the LAST state in the sequence
+        # x shape: [batch, window, features, assets] -> flattened to [batch, window*features*assets]
+        # In our case, features_per_day = features * assets
+        # The very last element of the flattened vector for each batch is the regime of the current day
         regime_indices = x[:, -1].long() 
         
         features = self.feature_extractor(x)
@@ -384,7 +396,7 @@ def train_a2c(
     lr=1e-4,    # Slightly lower for Dirichlet stability
     value_coef=0.5,
     entropy_coef=0.01, # Increased from 0.01 to 0.05 to encourage spread
-    batch_size=64
+    batch_size=20
 ):
     obs_dim = np.prod(env.observation_space.shape)
     act_dim = env.action_space.shape[0]
