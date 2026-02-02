@@ -18,31 +18,31 @@ class MarketRegimeHMM:
     def prepare_data(self, df):
         """
         Prepares data for HMM. 
-        Uses equal-weight returns of all tickers as the primary signal.
+        Uses the returns of all tickers in the pivot table as exogenous features.
         """
-        # Pivot to get returns for all tickers
+        # Pivot to get returns for all specified exogenous tickers
         returns_df = df.pivot(index='date', columns='tic', values='close').pct_change().fillna(0)
-        # Equal-weight market return
-        market_return = returns_df.mean(axis=1).values.reshape(-1, 1)
-        # Volatility signal (rolling std)
-        market_vol = returns_df.rolling(window=20).std().mean(axis=1).fillna(0).values.reshape(-1, 1)
         
-        X = np.column_stack([market_return, market_vol])
+        # Use all available tickers as features (multi-dimensional)
+        X = returns_df.values
         return X, returns_df.index
 
     def fit(self, df):
+        """
+        Fit HMM using the provided exogenous data.
+        """
         X, dates = self.prepare_data(df)
         self.model.fit(X)
         self.is_fitted = True
         
-        # Determine regime "meaning" (sort by volatility)
-        # We want to know which state is Bear (high vol) vs Bull (low vol)
+        # Determine regime "meaning" (sort by average return across all features)
+        # In a multi-dimensional setup, we can sort by the mean of the means
         state_means = self.model.means_ # [n_regimes, n_features]
-        vol_index = 1 # index of market_vol in X
-        self.vol_states = np.argsort(state_means[:, vol_index]) 
-        # Low index in vol_states = Low vol (Bull), High index = High vol (Bear)
+        avg_returns = state_means.mean(axis=1)
+        self.sorted_states = np.argsort(avg_returns) 
+        # Low index in sorted_states = Lowest average return, High index = Highest average return
         
-        print(f"HMM fitted. Volatility order (Low->High): {self.vol_states}")
+        print(f"HMM fitted. Regime order (Low Return -> High Return): {self.sorted_states}")
         return self
 
     def predict(self, df):
@@ -51,9 +51,9 @@ class MarketRegimeHMM:
         X, dates = self.prepare_data(df)
         regimes = self.model.predict(X)
         
-        # Map raw states to common scale (0=Low Vol, 1=Med Vol, 2=High Vol)
+        # Map raw states to sorted scale (0 to n_regimes-1)
         mapped_regimes = np.zeros_like(regimes)
-        for i, state in enumerate(self.vol_states):
+        for i, state in enumerate(self.sorted_states):
             mapped_regimes[regimes == state] = i
             
         return pd.DataFrame({'date': dates, 'regime': mapped_regimes})
@@ -96,19 +96,19 @@ def plot_regimes(df, regime_df, save_path='results/regimes.png'):
     ax.plot(cum_returns.index, cum_returns.values, color='black', alpha=0.3, label='Market Cum. Returns')
     
     # Overlay colors based on regime
-    regime_colors = ['green', 'blue', 'red'] # Bull, Sideways, Bear (based on vol sorting)
-    labels = ['Low Vol (Bull)', 'Med Vol', 'High Vol (Bear)']
+    regime_colors = ['red', 'orange', 'blue', 'green'] # Bear, Sideways Down, Sideways Up, Bull
+    labels = ['High Bear', 'Sideways/Low Bear', 'Sideways/Low Bull', 'High Bull']
     
-    for i in range(3):
+    for i in range(len(regime_colors)):
         mask = regime_df['regime'] == i
         dates = regime_df.loc[mask, 'date']
         # Highlight these segments
         for d in dates:
-            ax.axvspan(d, d, color=regime_colors[i], alpha=0.2)
+            ax.axvspan(d, d, color=regime_colors[i], alpha=0.15)
     
     # Proxy artists for legend
     from matplotlib.lines import Line2D
-    custom_lines = [Line2D([0], [0], color=regime_colors[i], lw=4, alpha=0.5) for i in range(3)]
+    custom_lines = [Line2D([0], [0], color=regime_colors[i], lw=4, alpha=0.5) for i in range(len(regime_colors))]
     ax.legend(custom_lines + [Line2D([0], [0], color='black', alpha=0.3)], labels + ['Market'])
     
     plt.title('Market Regimes Detected by HMM')

@@ -235,6 +235,18 @@ fe = FeatureEngineer(
 
 df = fe.preprocess_data(df)
 
+# --- NEW: Fetch Exogenous Features (Benchmarks) ---
+print("\nFetching Exogenous Benchmarks for HMM...")
+EXO_TICKERS = ['SPY', 'DBC', 'LQD', 'EMB', 'TLT', 'TIP']
+df_exo = YahooDownloader(
+    start_date=START_DATE,
+    end_date=END_DATE,
+    ticker_list=EXO_TICKERS
+).fetch_data()
+# Clean and align exogenous data
+df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
+# --------------------------------------------------
+
 # --- NEW: Robust Data Cleaning ---
 print("\nCleaning data for consistency...")
 df = df.drop_duplicates(subset=["date", "tic"])
@@ -279,10 +291,10 @@ print(f"Data shape with covariance: {df.shape}")
 print("="*50)
 
 # --- NEW: HMM Regime Fitting ---
-print("\nFitting HMM for regime detection...")
-hmm_model = MarketRegimeHMM(n_regimes=3)
-hmm_model.fit(df)
-regime_df = hmm_model.predict(df)
+print("\nFitting HMM for regime detection (4-Regime Setup)...")
+hmm_model = MarketRegimeHMM(n_regimes=4)
+hmm_model.fit(df_exo)
+regime_df = hmm_model.predict(df_exo)
 
 # --- NEW: Predict Future Regime ---
 print("Predicting future regimes...")
@@ -337,9 +349,9 @@ class Actor(nn.Module):
             nn.ReLU()
         )
         
-        # Specialist heads for 3 regimes (Bull, Sideways, Bear)
+        # Specialist heads for 4 regimes (Bull, Sideways Up, Sideways Down, Bear)
         self.heads = nn.ModuleList([
-            nn.Linear(hidden, num_assets) for _ in range(3)
+            nn.Linear(hidden, num_assets) for _ in range(4)
         ])
 
     def forward(self, x):
@@ -362,7 +374,7 @@ class Actor(nn.Module):
         # Selection logic (Multi-agent routing)
         # To support batching, we process each item according to its regime
         out = torch.zeros(x.shape[0], self.heads[0].out_features, device=x.device)
-        for i in range(3):
+        for i in range(4):
             mask = (regime_indices == i)
             if mask.any():
                 out[mask] = self.heads[i](features[mask])
