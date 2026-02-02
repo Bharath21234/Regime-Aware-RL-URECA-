@@ -25,7 +25,7 @@ class MarketRegimeHMM:
         # Equal-weight market return
         market_return = returns_df.mean(axis=1).values.reshape(-1, 1)
         # Volatility signal (rolling std)
-        market_vol = returns_df.rolling(window=10).std().mean(axis=1).fillna(0).values.reshape(-1, 1)
+        market_vol = returns_df.rolling(window=20).std().mean(axis=1).fillna(0).values.reshape(-1, 1)
         
         X = np.column_stack([market_return, market_vol])
         return X, returns_df.index

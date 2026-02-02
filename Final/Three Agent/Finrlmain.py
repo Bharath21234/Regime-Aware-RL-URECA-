@@ -454,8 +454,9 @@ def train_a2c(
             state = next_state
             ep_reward += reward
 
-            # Update if batch is full or episode ends
-            if len(rewards) >= batch_size or done:
+            # Update if buffer is full (at every step)
+            # This creates overlapping windows that shift by 1 day
+            if len(rewards) >= batch_size:
                 with torch.no_grad():
                     s_next = torch.tensor(
                         next_state.flatten(),
@@ -463,7 +464,7 @@ def train_a2c(
                     ).unsqueeze(0).to(DEVICE)
                     next_value = critic(s_next) if not done else torch.zeros(1, device=DEVICE)
 
-                # Calculate returns (bootstrapped)
+                # Calculate returns (bootstrapped) for the current window
                 returns = []
                 R = next_value.squeeze()
                 for r, m in zip(reversed(rewards), reversed(masks)):
@@ -487,7 +488,15 @@ def train_a2c(
                 loss.backward()
                 optimizer.step()
 
-                # Clear buffer
+                # SLIDE BY 1: Remove the oldest entry
+                log_probs.pop(0)
+                values.pop(0)
+                rewards.pop(0)
+                masks.pop(0)
+                entropies.pop(0)
+            
+            if done:
+                # Clear buffer at end of episode
                 log_probs, values, rewards, masks, entropies = [], [], [], [], []
 
         rewards_history.append(ep_reward)
