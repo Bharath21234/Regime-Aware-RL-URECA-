@@ -66,9 +66,9 @@ class MarketRegimeHMM:
         if not self.is_fitted:
             raise ValueError("HMM not fitted yet.")
         
-        # current_regime is the mapped regime index (0, 1, 2)
+        # current_regime is the mapped regime index (0, 1, 2, 3)
         # We need to map it back to the raw state index used by hmmlearn
-        raw_state = self.vol_states[current_regime]
+        raw_state = self.sorted_states[current_regime]
         
         # Get transition probabilities from this state
         trans_probs = self.model.transmat_[raw_state]
@@ -76,8 +76,8 @@ class MarketRegimeHMM:
         # Find raw state with highest probability
         next_raw_state = np.argmax(trans_probs)
         
-        # Map back to 0, 1, 2 scale
-        next_mapped_regime = np.where(self.vol_states == next_raw_state)[0][0]
+        # Map back to sorted scale
+        next_mapped_regime = np.where(self.sorted_states == next_raw_state)[0][0]
         
         return next_mapped_regime
 
