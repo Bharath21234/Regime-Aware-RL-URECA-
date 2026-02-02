@@ -428,65 +428,68 @@ def train_a2c(
         done = False
         ep_reward = 0.0
 
-        # Rollout buffer
-        log_probs = []
-        values = []
-        rewards = []
-        masks = []
-        entropies = []
+        # Rollout buffer (Data storage)
+        states_buffer = []
+        weights_buffer = []
+        rewards_buffer = []
+        masks_buffer = []
 
         while not done:
-            s = torch.tensor(
+            s_input = torch.tensor(
                 state.flatten(),
                 dtype=torch.float32
             ).unsqueeze(0).to(DEVICE)
 
-            # Actor & Critic
-            alpha = actor(s)
-            value = critic(s)
-
-            # Dirichlet distribution for exploration
-            dist = torch.distributions.Dirichlet(alpha)
-            # Sample weights (sum to 1)
-            weights = dist.sample()
-            log_prob = dist.log_prob(weights)
-            entropy = dist.entropy()
-
+            # Actor & Critic (No grad for sampling)
+            with torch.no_grad():
+                alpha = actor(s_input)
+                dist = torch.distributions.Dirichlet(alpha)
+                weights = dist.sample()
+            
             # Environment step
-            action = weights.detach().cpu().numpy()[0]
+            action = weights.cpu().numpy()[0]
             next_state, reward, done, _, _ = env.step(action)
 
             # Store in buffer
-            log_probs.append(log_prob)
-            values.append(value)
-            rewards.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
-            masks.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
-            entropies.append(entropy)
+            states_buffer.append(s_input)
+            weights_buffer.append(weights)
+            rewards_buffer.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
+            masks_buffer.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
 
             state = next_state
             ep_reward += reward
 
-            # Update if buffer is full (at every step)
-            # This creates overlapping windows that shift by 1 day
-            if len(rewards) >= batch_size:
+            # Update if buffer is full (Rolling Update)
+            if len(rewards_buffer) >= batch_size:
+                # Prepare trajectory tensors
+                b_states = torch.cat(states_buffer) # [batch, flattened_features]
+                b_weights = torch.cat(weights_buffer) # [batch, num_assets]
+                b_rewards = torch.tensor(rewards_buffer, device=DEVICE)
+                b_masks = torch.tensor(masks_buffer, device=DEVICE)
+
+                # Re-evaluate graph for the entire window
+                alpha_batch = actor(b_states)
+                values_tensor = critic(b_states).squeeze()
+                
+                dist_batch = torch.distributions.Dirichlet(alpha_batch)
+                log_probs_tensor = dist_batch.log_prob(b_weights)
+                entropies_tensor = dist_batch.entropy()
+
+                # Calculate returns (bootstrapped)
                 with torch.no_grad():
                     s_next = torch.tensor(
                         next_state.flatten(),
                         dtype=torch.float32
                     ).unsqueeze(0).to(DEVICE)
-                    next_value = critic(s_next) if not done else torch.zeros(1, device=DEVICE)
-
-                # Calculate returns (bootstrapped) for the current window
+                    next_value = critic(s_next) if not done else torch.zeros(1, 1, device=DEVICE)
+                
                 returns = []
                 R = next_value.squeeze()
-                for r, m in zip(reversed(rewards), reversed(masks)):
+                for r, m in zip(reversed(rewards_buffer), reversed(masks_buffer)):
                     R = r + gamma * R * m
                     returns.insert(0, R)
                 
                 returns = torch.stack(returns).squeeze()
-                values_tensor = torch.cat(values).squeeze()
-                log_probs_tensor = torch.cat(log_probs).squeeze()
-                entropies_tensor = torch.cat(entropies).squeeze()
                 
                 # Advantage
                 advantages = returns - values_tensor
@@ -501,15 +504,14 @@ def train_a2c(
                 optimizer.step()
 
                 # SLIDE BY 1: Remove the oldest entry
-                log_probs.pop(0)
-                values.pop(0)
-                rewards.pop(0)
-                masks.pop(0)
-                entropies.pop(0)
+                states_buffer.pop(0)
+                weights_buffer.pop(0)
+                rewards_buffer.pop(0)
+                masks_buffer.pop(0)
             
             if done:
                 # Clear buffer at end of episode
-                log_probs, values, rewards, masks, entropies = [], [], [], [], []
+                states_buffer, weights_buffer, rewards_buffer, masks_buffer = [], [], [], []
 
         rewards_history.append(ep_reward)
 
