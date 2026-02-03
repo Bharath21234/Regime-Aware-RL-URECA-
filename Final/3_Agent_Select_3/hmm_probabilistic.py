@@ -17,13 +17,11 @@ class ProbabilisticHMM:
         self.is_fitted = False
 
     def prepare_data(self, df):
-        # Pivot to get returns for all tickers
+        """
+        Prepares data for HMM using multi-dimensional benchmark returns.
+        """
         returns_df = df.pivot(index='date', columns='tic', values='close').pct_change().fillna(0)
-        # Equal-weighted market signals
-        market_return = returns_df.mean(axis=1).values.reshape(-1, 1)
-        market_vol = returns_df.rolling(window=10).std().mean(axis=1).fillna(0).values.reshape(-1, 1)
-        
-        X = np.column_stack([market_return, market_vol])
+        X = returns_df.values
         return X, returns_df.index
 
     def fit(self, df):
@@ -31,9 +29,11 @@ class ProbabilisticHMM:
         self.model.fit(X)
         self.is_fitted = True
         
-        # Sort states by volatility: 0=Bull (Low Vol), 1=Med, 2=Bear (High Vol)
-        state_means = self.model.means_ 
-        self.vol_states = np.argsort(state_means[:, 1]) 
+        # Sort states by average return across all features
+        state_means = self.model.means_ # [n_regimes, n_features]
+        avg_returns = state_means.mean(axis=1)
+        self.vol_states = np.argsort(avg_returns) 
+        print(f"HMM fitted. Regime order (Low Return -> High Return): {self.vol_states}")
         return self
 
     def predict_proba(self, df):

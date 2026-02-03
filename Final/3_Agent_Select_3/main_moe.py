@@ -64,12 +64,22 @@ def add_cov(df, lookback=252):
 print("Computing covariance matrices...")
 df = add_cov(df)
 
+# --- NEW: Fetch Exogenous Features (Macro Benchmarks for HMM) ---
+print("\nFetching Exogenous Benchmarks for Macro HMM...")
+EXO_TICKERS = ['SPY', 'DBC', 'LQD', 'EMB', 'TLT', 'TIP']
+df_exo = YahooDownloader(
+    start_date=START_DATE,
+    end_date=END_DATE,
+    ticker_list=EXO_TICKERS
+).fetch_data()
+df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
+
 # HMM
-print("Fitting Probabilistic HMM...")
+print("Fitting Probabilistic Macro HMM...")
 hmm = ProbabilisticHMM(n_regimes=3)
-hmm.fit(df)
-prob_df = hmm.predict_proba(df)
-plot_regime_probs(prob_df, save_path='moe_regime_probs.png') # Local save
+hmm.fit(df_exo)
+prob_df = hmm.predict_proba(df_exo)
+plot_regime_probs(prob_df, save_path='moe_regime_probs.png')
 
 # Env
 env = MixturePortfolioEnv(
