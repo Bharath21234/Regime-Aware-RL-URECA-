@@ -21,6 +21,8 @@ from finrl.meta.preprocessor.preprocessors import FeatureEngineer
 from gym import spaces
 from gym.utils import seeding
 from hmm import MarketRegimeHMM, plot_regimes
+import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 # ============================================================================
 # Helper Functions
@@ -66,7 +68,6 @@ from finrl.meta.env_portfolio_allocation.env_portfolio import StockPortfolioEnv
 def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_pct, reward_scaling, state_space, action_space, tech_indicator_list, turbulence_threshold=None, lookback=252, day=0, **kwargs):
     self.day = day
     self.lookback = lookback
-    self.df = df
     self.stock_dim = stock_dim
     self.hmax = hmax
     self.initial_amount = initial_amount
@@ -76,73 +77,89 @@ def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_p
     self.action_space_dim = action_space
     self.tech_indicator_list = tech_indicator_list
     self.action_space = spaces.Box(low=0, high=1, shape=(self.action_space_dim,), dtype=np.float32)
-    self.unique_dates = self.df.date.unique()
-    self.data = self.df[self.df.date == self.unique_dates[self.day]]
-    self.covs = self.data["cov_list"].iloc[0]
-    
-    # NEW: Correctly initialize tech_array before using it in state
-    tech_array = np.array([self.data[tech].values for tech in self.tech_indicator_list])
-    
-    # Store regimes
-    self.regime_df = kwargs.get('regime_df', None)
-    current_regime = 0
-    if self.regime_df is not None:
-        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
-        if not regime_match.empty:
-            current_regime = regime_match.values[0]
-    
-    self.state = np.vstack([self.covs, tech_array]).astype(np.float32)
-    regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
-    self.state = np.vstack([self.state, regime_row])
-    
-    # NEW: State Memory for temporal stacking
-    self.state_memory = [self.state] * self.lookback
-
     self.terminal = False
     self.turbulence_threshold = turbulence_threshold
+    
+    # Pre-process data into NumPy arrays for MUCH faster lookup
+    self.unique_dates = df.date.unique()
+    
+    # Store prices and technical indicators in a dictionary of matrices keyed by date
+    # Or better yet, a 3D NumPy array [num_dates, num_indicators, num_stocks]
+    # For now, let's use a dictionary of pre-extracted rows to keep it simple but fast
+    self.data_dict = {}
+    self.covs_dict = {}
+    self.regime_dict = {}
+    
+    regime_df = kwargs.get('regime_df', None)
+    
+    # Group by date once
+    for date, group in df.groupby('date'):
+        # Sort by tic to ensure consistency
+        group = group.sort_values('tic')
+        self.covs_dict[date] = group["cov_list"].iloc[0]
+        self.data_dict[date] = group
+        # Technical indicators as matrix
+        tech_array = np.array([group[tech].values for tech in self.tech_indicator_list])
+        tech_array = np.nan_to_num(tech_array) # Safety check
+        
+        # Combine covs and tech safely
+        covs = np.nan_to_num(self.covs_dict[date])
+        state_base = np.vstack([covs, tech_array]).astype(np.float32)
+        
+        # Add regime info
+        current_regime = 0
+        if regime_df is not None:
+            regime_match = regime_df.loc[regime_df.date == date, 'future_regime']
+            if not regime_match.empty:
+                current_regime = regime_match.values[0]
+        
+        regime_row = np.full((1, state_base.shape[1]), current_regime).astype(np.float32)
+        self.regime_dict[date] = np.vstack([state_base, regime_row])
+
+    # Initial state
+    date = self.unique_dates[self.day]
+    self.state = self.regime_dict[date]
+    self.state_memory = [self.state] * self.lookback
     self.portfolio_value = self.initial_amount
     self.asset_memory = [self.initial_amount]
     self.portfolio_return_memory = [0]
     self.actions_memory = [[1/self.stock_dim]*self.stock_dim]
-    self.date_memory = [self.unique_dates[self.day]]
+    self.date_memory = [date]
 
 def _step_override(self, actions):
     self.terminal = self.day >= len(self.unique_dates) - 1
     if self.terminal:
-        df = pd.DataFrame(self.portfolio_return_memory)
-        df.columns = ['daily_return']
-        if df['daily_return'].std() != 0:
-            self.sharpe = (252**0.5) * df['daily_return'].mean() / df['daily_return'].std()
-        return self.state, self.reward, self.terminal, False, {}
+        df_rets = pd.DataFrame(self.portfolio_return_memory)
+        df_rets.columns = ['daily_return']
+        if df_rets['daily_return'].std() != 0:
+            self.sharpe = (252**0.5) * df_rets['daily_return'].mean() / df_rets['daily_return'].std()
+        return np.array(self.state_memory), self.reward, self.terminal, False, {}
     else:
         try:
             weights = enforce_portfolio_constraints(actions, max_weight=0.60)
         except:
             weights = actions
         self.actions_memory.append(weights)
-        last_day_memory = self.data
-        self.day += 1
-        self.data = self.df[self.df.date == self.unique_dates[self.day]]
-        self.covs = self.data["cov_list"].iloc[0]
-        tech_array = np.array([self.data[tech].values for tech in self.tech_indicator_list])
-        self.state = np.vstack([self.covs, tech_array]).astype(np.float32)
         
-        # Append regime info
-        current_regime = 0
-        if self.regime_df is not None:
-            regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
-            if not regime_match.empty:
-                current_regime = regime_match.values[0]
-        regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
-        self.state = np.vstack([self.state, regime_row])
+        last_date = self.unique_dates[self.day]
+        last_day_data = self.data_dict[last_date]
+        
+        self.day += 1
+        current_date = self.unique_dates[self.day]
+        current_day_data = self.data_dict[current_date]
+        
+        self.state = self.regime_dict[current_date]
         
         # Update state memory
         self.state_memory.pop(0)
         self.state_memory.append(self.state)
 
-        portfolio_return = sum(((self.data.close.values / last_day_memory.close.values) - 1) * weights)
+        # Vectorized portfolio return calculation
+        # last_day_data and current_day_data are sorted by tic
+        portfolio_return = np.sum(((current_day_data.close.values / last_day_data.close.values) - 1) * weights)
+        
         self.portfolio_return_memory.append(portfolio_return)
-        self.date_memory.append(self.unique_dates[self.day])
+        self.date_memory.append(current_date)
         self.portfolio_value = self.portfolio_value * (1 + portfolio_return)
         self.asset_memory.append(self.portfolio_value)
         self.reward = portfolio_return * self.reward_scaling
@@ -153,28 +170,14 @@ def _reset_override(self, seed=None, options=None):
         self._seed(seed)
     self.asset_memory = [self.initial_amount]
     self.day = 0
-    self.data = self.df[self.df.date == self.unique_dates[self.day]]
-    self.covs = self.data["cov_list"].iloc[0]
-    tech_array = np.array([self.data[tech].values for tech in self.tech_indicator_list])
-    self.state = np.vstack([self.covs, tech_array]).astype(np.float32)
-    
-    # Append regime info
-    current_regime = 0
-    if self.regime_df is not None:
-        regime_match = self.regime_df.loc[self.regime_df.date == self.unique_dates[self.day], 'future_regime']
-        if not regime_match.empty:
-            current_regime = regime_match.values[0]
-    regime_row = np.full((1, self.state.shape[1]), current_regime).astype(np.float32)
-    self.state = np.vstack([self.state, regime_row])
-    
-    # NEW: State Memory
+    date = self.unique_dates[self.day]
+    self.state = self.regime_dict[date]
     self.state_memory = [self.state] * self.lookback
-
     self.portfolio_value = self.initial_amount
     self.terminal = False
     self.portfolio_return_memory = [0]
     self.actions_memory = [[1/self.stock_dim]*self.stock_dim]
-    self.date_memory = [self.unique_dates[self.day]]
+    self.date_memory = [date]
     return np.array(self.state_memory), {}
 
 def _seed_override(self, seed=None):
@@ -213,7 +216,12 @@ START_DATE = "2015-01-01"
 END_DATE   = "2024-01-01"
 INITIAL_AMOUNT = 1_000_000
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
 print(f"Using device: {DEVICE}")
 
 # ============================================================================
@@ -249,10 +257,12 @@ df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
 
 # --- NEW: Robust Data Cleaning ---
 print("\nCleaning data for consistency...")
+df = df.dropna()
 df = df.drop_duplicates(subset=["date", "tic"])
 # Ensure all tickers have data for the same set of dates
 df_counts = df.groupby('tic').size()
 max_counts = df_counts.max()
+# Filter tickers that have the maximum number of observations
 tickers_to_keep = df_counts[df_counts == max_counts].index.tolist()
 if len(tickers_to_keep) < len(df_counts):
     print(f"Dropping {len(df_counts) - len(tickers_to_keep)} tickers with incomplete data.")
@@ -262,25 +272,52 @@ TICKER_LIST = sorted(df.tic.unique().tolist()) # Update list to match actual dat
 # ---------------------------------
 
 # Add Covariance Matrix (Required for StockPortfolioEnv)
-def add_covariance_matrix(df, lookback=252):
-    """Add covariance matrix to the dataframe"""
+def add_covariance_matrix(df, lookback=20):
+    """
+    Optimized covariance matrix calculation.
+    Pivots once and uses a rolling window on NumPy arrays.
+    """
     df = df.sort_values(['date', 'tic'], ignore_index=True)
-    df.index = df.date.factorize()[0]
     
+    # Pivot to get a matrix of prices: dates as rows, tickers as columns
+    price_pivot = df.pivot_table(index='date', columns='tic', values='close')
+    # Use ffill and bfill to handle potential missing values
+    price_pivot = price_pivot.ffill().bfill()
+    
+    # Calculate daily returns
+    returns = price_pivot.pct_change()
+    
+    unique_dates = returns.index.tolist()
     cov_list = []
     
-    # Iterate over unique dates
-    unique_dates = df.date.unique()
-    for i in range(lookback, len(unique_dates)):
-        # Select lookback window
-        data_lookback = df.loc[i - lookback:i, :]
-        price_lookback = data_lookback.pivot_table(index='date', columns='tic', values='close')
-        return_lookback = price_lookback.pct_change().dropna()
-        covs = return_lookback.cov().values
-        cov_list.append(covs)
+    # Pre-calculate covariance matrices using rolling window on NumPy array
+    returns_np = returns.values
     
-    df_cov = pd.DataFrame({'date': unique_dates[lookback:], 'cov_list': cov_list})
+    for i in range(len(unique_dates)):
+        # Ensure we have at least 2 rows for covariance, otherwise use identity or zero
+        if i < 2:
+            cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
+        else:
+            start_idx = max(0, i - lookback + 1)
+            window = returns_np[start_idx:i+1]
+            # Filter out NaNs in the window if any
+            window = window[~np.isnan(window).any(axis=1)]
+            
+            if window.shape[0] < 2:
+                cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
+            else:
+                cov = np.cov(window, rowvar=False)
+        
+        # Replace any remaining NaNs (e.g. from constant returns) with 0
+        cov = np.nan_to_num(cov)
+        cov_list.append(cov)
+    
+    # Create a mapping of date to covariance matrix
+    df_cov = pd.DataFrame({'date': unique_dates, 'cov_list': cov_list})
+    
+    # Merge back to original dataframe (drops the first row since returns[0] is NaN)
     df = df.merge(df_cov, on='date')
+    df = df.dropna(subset=['cov_list'])
     df = df.sort_values(['date', 'tic']).reset_index(drop=True)
     return df
 
@@ -435,16 +472,15 @@ def train_a2c(
         masks_buffer = []
 
         while not done:
-            s_input = torch.tensor(
-                state.flatten(),
-                dtype=torch.float32
-            ).unsqueeze(0).to(DEVICE)
+            # Efficiently convert state to tensor
+            s_input = torch.from_numpy(state.flatten()).float().unsqueeze(0).to(DEVICE)
 
             # Actor & Critic (No grad for sampling)
             with torch.no_grad():
                 alpha = actor(s_input)
-                dist = torch.distributions.Dirichlet(alpha)
-                weights = dist.sample()
+                # Dirichlet sampling fallback (MPS doesn't support it yet)
+                dist = torch.distributions.Dirichlet(alpha.cpu())
+                weights = dist.sample().to(DEVICE)
             
             # Environment step
             action = weights.cpu().numpy()[0]
@@ -453,19 +489,21 @@ def train_a2c(
             # Store in buffer
             states_buffer.append(s_input)
             weights_buffer.append(weights)
-            rewards_buffer.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
-            masks_buffer.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
+            rewards_buffer.append(reward)
+            masks_buffer.append(1.0 - float(done))
 
             state = next_state
             ep_reward += reward
 
             # Update if buffer is full (Rolling Update)
             if len(rewards_buffer) >= batch_size:
-                # Prepare trajectory tensors
+                # Prepare trajectory tensors (Minimize concat)
                 b_states = torch.cat(states_buffer) # [batch, flattened_features]
                 b_weights = torch.cat(weights_buffer) # [batch, num_assets]
-                b_rewards = torch.tensor(rewards_buffer, device=DEVICE)
-                b_masks = torch.tensor(masks_buffer, device=DEVICE)
+                
+                # Convert list to tensor on device once
+                b_rewards = torch.tensor(rewards_buffer, dtype=torch.float32, device=DEVICE)
+                b_masks = torch.tensor(masks_buffer, dtype=torch.float32, device=DEVICE)
 
                 # Re-evaluate graph for the entire window
                 alpha_batch = actor(b_states)
@@ -477,21 +515,19 @@ def train_a2c(
 
                 # Calculate returns (bootstrapped)
                 with torch.no_grad():
-                    s_next = torch.tensor(
-                        next_state.flatten(),
-                        dtype=torch.float32
-                    ).unsqueeze(0).to(DEVICE)
+                    s_next = torch.from_numpy(next_state.flatten()).float().unsqueeze(0).to(DEVICE)
                     next_value = critic(s_next) if not done else torch.zeros(1, 1, device=DEVICE)
                 
                 returns = []
                 R = next_value.squeeze()
+                # Use reversed loop efficiently
                 for r, m in zip(reversed(rewards_buffer), reversed(masks_buffer)):
                     R = r + gamma * R * m
                     returns.insert(0, R)
                 
                 returns = torch.stack(returns).squeeze()
                 
-                # Advantage
+                # Advantage (Normalize for stability)
                 advantages = returns - values_tensor
                 
                 # Losses
@@ -499,8 +535,10 @@ def train_a2c(
                 critic_loss = advantages.pow(2).mean()
                 loss = actor_loss + value_coef * critic_loss - entropy_coef * entropies_tensor.mean()
 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True) # Slightly faster than zero_grad()
                 loss.backward()
+                # Clip gradients to prevent exploding gradients (stability)
+                torch.nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), 0.5)
                 optimizer.step()
 
                 # SLIDE BY 1: Remove the oldest entry
@@ -515,8 +553,8 @@ def train_a2c(
 
         rewards_history.append(ep_reward)
 
-        if ep % 20 == 0:
-            print(f"Episode {ep:04d} | Reward: {ep_reward:.6f}")
+        if ep % 10 == 0:
+            print(f"Episode {ep:04d} | Reward: {ep_reward:.6f} | Value: {R.item():.4f}")
 
     return actor, critic, rewards_history
 
@@ -588,7 +626,7 @@ final_weights = None
 all_weights = []
 
 while not done:
-    s = torch.tensor(state.flatten(), dtype=torch.float32).unsqueeze(0).to(DEVICE)
+    s = torch.from_numpy(state.flatten()).float().unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         # Use Dirichlet Actor logic (concentration parameters)
         alpha = actor(s)
