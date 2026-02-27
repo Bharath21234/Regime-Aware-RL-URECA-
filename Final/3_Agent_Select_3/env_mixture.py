@@ -48,7 +48,7 @@ class MixturePortfolioEnv(gym.Env):
         
         # Append probabilities
         probs = self.regime_probs_df[self.regime_probs_df.date == date].iloc[0]
-        prob_vec = probs[['regime_p_0', 'regime_p_1', 'regime_p_2']].values.astype(np.float32)
+        prob_vec = probs[['regime_p_0', 'regime_p_1', 'regime_p_2', 'regime_p_3']].values.astype(np.float32)
         
         return np.concatenate([state, prob_vec])
 
@@ -92,3 +92,10 @@ class MixturePortfolioEnv(gym.Env):
         
         self.state = self._get_state()
         return self.state, reward, self.terminal, False, {}
+
+
+
+
+
+#try with one agent, two and four -- compare, keep all other paratmers of agents the same 
+# try select one agent, then compare with existing probabilistic mixture system

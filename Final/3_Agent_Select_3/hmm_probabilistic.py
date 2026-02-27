@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os
 
 class ProbabilisticHMM:
-    def __init__(self, n_regimes=3):
+    def __init__(self, n_regimes=4):
         self.n_regimes = n_regimes
         self.model = hmm.GaussianHMM(
             n_components=n_regimes, 
@@ -54,9 +54,10 @@ def plot_regime_probs(prob_df, save_path='results/regime_probabilities.png'):
     os.makedirs('results', exist_ok=True)
     plt.figure(figsize=(15, 6))
     plt.stackplot(prob_df['date'], 
-                  prob_df['regime_p_0'], prob_df['regime_p_1'], prob_df['regime_p_2'],
-                  labels=['Bull', 'Sideways', 'Bear'],
-                  colors=['#2ecc71', '#3498db', '#e74c3c'], alpha=0.6)
+                  prob_df['regime_p_0'], prob_df['regime_p_1'], 
+                  prob_df['regime_p_2'], prob_df['regime_p_3'],
+                  labels=['Bear', 'Sideways Down', 'Sideways Up', 'Bull'],
+                  colors=['#e74c3c', '#f39c12', '#f1c40f', '#2ecc71'], alpha=0.6)
     plt.title('Market Regime Probabilities (HMM)')
     plt.legend(loc='upper left')
     plt.savefig(save_path)

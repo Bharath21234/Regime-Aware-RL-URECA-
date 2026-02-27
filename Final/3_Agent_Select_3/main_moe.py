@@ -1,6 +1,9 @@
 """
 Main Entry point for Probabilistic MoE FinRL System.
 """
+import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 import torch
 import torch.optim as optim
 import numpy as np
@@ -26,7 +29,13 @@ TICKERS = sorted(list(set(TICKER_LIST)))
 
 START_DATE = "2015-01-01"
 END_DATE = "2024-01-01"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+print(f"Using device: {DEVICE}")
 
 # ============================================================================
 # Data Pipeline
@@ -76,7 +85,7 @@ df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
 
 # HMM
 print("Fitting Probabilistic Macro HMM...")
-hmm = ProbabilisticHMM(n_regimes=3)
+hmm = ProbabilisticHMM(n_regimes=4)
 hmm.fit(df_exo)
 prob_df = hmm.predict_proba(df_exo)
 plot_regime_probs(prob_df, save_path='moe_regime_probs.png')

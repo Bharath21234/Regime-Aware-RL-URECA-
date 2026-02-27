@@ -16,9 +16,9 @@ class ActorMoE(nn.Module):
             nn.ReLU()
         )
         
-        # Expert heads (Bull, Sideways, Bear)
+        # Expert heads (Bear, Sideways Down, Sideways Up, Bull)
         self.experts = nn.ModuleList([
-            nn.Linear(hidden, num_assets) for _ in range(3)
+            nn.Linear(hidden, num_assets) for _ in range(4)
         ])
 
     def forward(self, x):
@@ -26,17 +26,17 @@ class ActorMoE(nn.Module):
         # In our env, we'll append the 3 regime probabilities to the end of the observation
         # obs_dim = (n_assets * n_indicators) + covariance_matrix_elements + 3
         
-        # Probabilities are the last 3 elements
-        regime_probs = x[:, -3:] # [batch, 3]
+        # Probabilities are the last 4 elements
+        regime_probs = x[:, -4:] # [batch, 4]
         
         # Extract features
         features = self.feature_extractor(x) # [batch, hidden]
         
         # Get expert outputs
-        expert_outputs = torch.stack([head(features) for head in self.experts], dim=1) # [batch, 3, num_assets]
+        expert_outputs = torch.stack([head(features) for head in self.experts], dim=1) # [batch, 4, num_assets]
         
-        # Weighted sum based on probabilities (MoE)
-        # regime_probs view is [batch, 3, 1] to multiply with [batch, 3, num_assets]
+        # expert_outputs view is [batch, 4, num_assets]
+        # regime_probs view is [batch, 4, 1] to multiply with [batch, 4, num_assets]
         combined_logits = torch.sum(expert_outputs * regime_probs.unsqueeze(-1), dim=1) # [batch, num_assets]
         
         # Dirichlet concentrations
