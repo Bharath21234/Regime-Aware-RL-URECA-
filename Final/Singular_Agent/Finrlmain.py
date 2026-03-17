@@ -1,9 +1,9 @@
 """
 Portfolio Allocation using A2C with FinRL Official Environment
-Author: (Your Name)
+Single Agent Baseline (No HMM, No Multi-Head Routing)
 
 - Uses FinRL's StockPortfolioEnv (official)
-- Custom A2C implementation
+- Custom A2C implementation (single actor head)
 - Continuous portfolio weights (simplex-safe)
 """
 
@@ -20,7 +20,6 @@ from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer
 from gym import spaces
 from gym.utils import seeding
-from hmm import MarketRegimeHMM, plot_regimes
 import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -83,14 +82,9 @@ def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_p
     # Pre-process data into NumPy arrays for MUCH faster lookup
     self.unique_dates = df.date.unique()
     
-    # Store prices and technical indicators in a dictionary of matrices keyed by date
-    # Or better yet, a 3D NumPy array [num_dates, num_indicators, num_stocks]
-    # For now, let's use a dictionary of pre-extracted rows to keep it simple but fast
     self.data_dict = {}
     self.covs_dict = {}
-    self.regime_dict = {}
-    
-    regime_df = kwargs.get('regime_df', None)
+    self.state_dict = {}
     
     # Group by date once
     for date, group in df.groupby('date'):
@@ -102,23 +96,14 @@ def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_p
         tech_array = np.array([group[tech].values for tech in self.tech_indicator_list])
         tech_array = np.nan_to_num(tech_array) # Safety check
         
-        # Combine covs and tech safely
+        # Combine covs and tech safely (NO regime row for single agent)
         covs = np.nan_to_num(self.covs_dict[date])
         state_base = np.vstack([covs, tech_array]).astype(np.float32)
-        
-        # Add regime info
-        current_regime = 0
-        if regime_df is not None:
-            regime_match = regime_df.loc[regime_df.date == date, 'future_regime']
-            if not regime_match.empty:
-                current_regime = regime_match.values[0]
-        
-        regime_row = np.full((1, state_base.shape[1]), current_regime).astype(np.float32)
-        self.regime_dict[date] = np.vstack([state_base, regime_row])
+        self.state_dict[date] = state_base
 
     # Initial state
     date = self.unique_dates[self.day]
-    self.state = self.regime_dict[date]
+    self.state = self.state_dict[date]
     self.state_memory = [self.state] * self.lookback
     self.portfolio_value = self.initial_amount
     self.asset_memory = [self.initial_amount]
@@ -148,7 +133,7 @@ def _step_override(self, actions):
         current_date = self.unique_dates[self.day]
         current_day_data = self.data_dict[current_date]
         
-        self.state = self.regime_dict[current_date]
+        self.state = self.state_dict[current_date]
         
         # Update state memory
         self.state_memory.pop(0)
@@ -171,7 +156,7 @@ def _reset_override(self, seed=None, options=None):
     self.asset_memory = [self.initial_amount]
     self.day = 0
     date = self.unique_dates[self.day]
-    self.state = self.regime_dict[date]
+    self.state = self.state_dict[date]
     self.state_memory = [self.state] * self.lookback
     self.portfolio_value = self.initial_amount
     self.terminal = False
@@ -243,19 +228,7 @@ fe = FeatureEngineer(
 
 df = fe.preprocess_data(df)
 
-# --- NEW: Fetch Exogenous Features (Benchmarks) ---
-print("\nFetching Exogenous Benchmarks for HMM...")
-EXO_TICKERS = ['SPY', 'DBC', 'LQD', 'EMB', 'TLT', 'TIP']
-df_exo = YahooDownloader(
-    start_date=START_DATE,
-    end_date=END_DATE,
-    ticker_list=EXO_TICKERS
-).fetch_data()
-# Clean and align exogenous data
-df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
-# --------------------------------------------------
-
-# --- NEW: Robust Data Cleaning ---
+# --- Robust Data Cleaning ---
 print("\nCleaning data for consistency...")
 df = df.dropna()
 df = df.drop_duplicates(subset=["date", "tic"])
@@ -326,22 +299,6 @@ df = add_covariance_matrix(df, lookback=20)
 print(f"Data shape with covariance: {df.shape}")
 
 print("="*50)
-
-# --- NEW: HMM Regime Fitting ---
-print("\nFitting HMM for regime detection (4-Regime Setup)...")
-hmm_model = MarketRegimeHMM(n_regimes=4)
-hmm_model.fit(df_exo)
-regime_df = hmm_model.predict(df_exo)
-
-# --- NEW: Predict Future Regime ---
-print("Predicting future regimes...")
-regime_df['future_regime'] = regime_df['regime'].apply(lambda x: hmm_model.predict_next_regime(x))
-# ----------------------------------
-
-plot_regimes(df, regime_df)
-# -------------------------------
-
-print("="*50)
 print(f"DEBUG: Initializing StockPortfolioEnv")
 print(f"DEBUG: df type: {type(df)}")
 print(f"DEBUG: df shape: {df.shape}")
@@ -361,7 +318,6 @@ env = StockPortfolioEnv(
     tech_indicator_list=["macd", "rsi", "cci", "adx"],
     lookback=20,
     day=0,
-    regime_df=regime_df # Pass regimes to env
 )
 
 # Update observation space shape in env object manually due to augmentation
@@ -375,10 +331,10 @@ env.observation_space = spaces.Box(
 # Actor-Critic Networks
 # ============================================================================
 class Actor(nn.Module):
-    """Multi-Agent Actor: Switches between 3 regime-specialized heads"""
+    """Single Actor: One head for all market conditions (no regime routing)"""
     def __init__(self, input_dim, num_assets, hidden=256):
         super().__init__()
-        # Share the feature extractor (lower layers)
+        # Feature extractor (same architecture as multi-agent version)
         self.feature_extractor = nn.Sequential(
             nn.Linear(input_dim, hidden),
             nn.ReLU(),
@@ -386,35 +342,13 @@ class Actor(nn.Module):
             nn.ReLU()
         )
         
-        # Specialist heads for 4 regimes (Bull, Sideways Up, Sideways Down, Bear)
-        self.heads = nn.ModuleList([
-            nn.Linear(hidden, num_assets) for _ in range(4)
-        ])
+        # Single output head (no regime-based routing)
+        self.head = nn.Linear(hidden, num_assets)
 
     def forward(self, x):
-        # Extract regime from state (last row, first element - we filled it with regime index)
-        # Note: x shape is [batch, obs_dim]
-        # Our obs_dim mapping: state matrix flattened
-        # Let's be explicit: regime is stored in the last element of each flattened batch entry (rough approximation if flattened)
-        # Better: keep track of where the regime info is. 
-        # In our env, it's the last row of the matrix.
-        
-        # Selection logic (Multi-agent routing)
-        # Regime info is in the last row of the LAST state in the sequence
-        # x shape: [batch, window, features, assets] -> flattened to [batch, window*features*assets]
-        # In our case, features_per_day = features * assets
-        # The very last element of the flattened vector for each batch is the regime of the current day
-        regime_indices = x[:, -1].long() 
-        
         features = self.feature_extractor(x)
+        out = self.head(features)
         
-        # Selection logic (Multi-agent routing)
-        # To support batching, we process each item according to its regime
-        out = torch.zeros(x.shape[0], self.heads[0].out_features, device=x.device)
-        for i in range(4):
-            mask = (regime_indices == i)
-            if mask.any():
-                out[mask] = self.heads[i](features[mask])
         # Normalize across stocks to amplify relative differences
         # (raw linear outputs are clustered too close for softplus to differentiate)
         out_mean = out.mean(dim=-1, keepdim=True)
@@ -445,7 +379,7 @@ class Critic(nn.Module):
 # ============================================================================
 def train_a2c(
     env,
-    epochs=1000,
+    epochs=200, # Reduced to 200 as requested
     gamma=0.99,
     lr=1e-4,    # Slightly lower for Dirichlet stability
     value_coef=0.5,
@@ -580,7 +514,7 @@ def plot_training_progress(rewards, save_path='results/finrlmain_training.png'):
     
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
-    plt.title('A2C Training Progress (FinRL Main)')
+    plt.title('A2C Training Progress (Single Agent Baseline)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -605,7 +539,7 @@ def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.
                   labels=sorted_tickers, 
                   alpha=0.8)
     
-    plt.title('Portfolio Allocation History (Weight Evolution)', fontsize=14)
+    plt.title('Portfolio Allocation History (Single Agent Baseline)', fontsize=14)
     plt.xlabel('Date / Step', fontsize=12)
     plt.ylabel('Weight', fontsize=12)
     # Put legend outside
