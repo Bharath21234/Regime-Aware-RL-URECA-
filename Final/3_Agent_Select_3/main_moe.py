@@ -124,7 +124,7 @@ print("Fitting Probabilistic Macro HMM...")
 hmm = ProbabilisticHMM(n_regimes=4)
 hmm.fit(df_exo)
 prob_df = hmm.predict_proba(df_exo)
-plot_regime_probs(prob_df, save_path='moe_regime_probs.png')
+plot_regime_probs(prob_df, save_path='results/regime_probabilities.png')
 
 # Env
 env = MixturePortfolioEnv(
