@@ -57,21 +57,57 @@ df = df.sort_values(["date", "tic"]).reset_index(drop=True)
 TICKERS = sorted(df.tic.unique().tolist())
 
 # Covariance
-def add_cov(df, lookback=252):
+def add_covariance_matrix(df, lookback=20):
+    """
+    Optimized covariance matrix calculation.
+    Pivots once and uses a rolling window on NumPy arrays.
+    """
     df = df.sort_values(['date', 'tic'], ignore_index=True)
-    df.index = df.date.factorize()[0]
-    unique_dates = df.date.unique()
+    
+    # Pivot to get a matrix of prices: dates as rows, tickers as columns
+    price_pivot = df.pivot_table(index='date', columns='tic', values='close')
+    # Use ffill and bfill to handle potential missing values
+    price_pivot = price_pivot.ffill().bfill()
+    
+    # Calculate daily returns
+    returns = price_pivot.pct_change()
+    
+    unique_dates = returns.index.tolist()
     cov_list = []
-    for i in range(lookback, len(unique_dates)):
-        data_window = df.loc[i - lookback:i, :]
-        price_pivot = data_window.pivot_table(index='date', columns='tic', values='close')
-        covs = price_pivot.pct_change().dropna().cov().values
-        cov_list.append(covs)
-    df_cov = pd.DataFrame({'date': unique_dates[lookback:], 'cov_list': cov_list})
-    return df.merge(df_cov, on='date')
+    
+    # Pre-calculate covariance matrices using rolling window on NumPy array
+    returns_np = returns.values
+    
+    for i in range(len(unique_dates)):
+        # Ensure we have at least 2 rows for covariance, otherwise use identity or zero
+        if i < 2:
+            cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
+        else:
+            start_idx = max(0, i - lookback + 1)
+            window = returns_np[start_idx:i+1]
+            # Filter out NaNs in the window if any
+            window = window[~np.isnan(window).any(axis=1)]
+            
+            if window.shape[0] < 2:
+                cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
+            else:
+                cov = np.cov(window, rowvar=False)
+        
+        # Replace any remaining NaNs (e.g. from constant returns) with 0
+        cov = np.nan_to_num(cov)
+        cov_list.append(cov)
+    
+    # Create a mapping of date to covariance matrix
+    df_cov = pd.DataFrame({'date': unique_dates, 'cov_list': cov_list})
+    
+    # Merge back to original dataframe (drops the first row since returns[0] is NaN)
+    df = df.merge(df_cov, on='date')
+    df = df.dropna(subset=['cov_list'])
+    df = df.sort_values(['date', 'tic']).reset_index(drop=True)
+    return df
 
 print("Computing covariance matrices...")
-df = add_cov(df)
+df = add_covariance_matrix(df, lookback=20)
 
 # --- NEW: Fetch Exogenous Features (Macro Benchmarks for HMM) ---
 print("\nFetching Exogenous Benchmarks for Macro HMM...")
@@ -97,8 +133,8 @@ env = MixturePortfolioEnv(
     initial_amount=1000000, 
     tech_indicator_list=["macd", "rsi", "cci", "adx"],
     regime_probs_df=prob_df,
-    risk_penalty=2.0,
-    reward_scaling=1e4
+    reward_scaling=1000.0,
+    lookback=20
 )
 
 # ============================================================================
@@ -112,9 +148,9 @@ def train():
     critic = Critic(obs_dim).to(DEVICE)
     optimizer = optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=1e-4)
     
-    epochs = 150 # Reduced to 150 as requested
+    epochs = 200 # Fixed to 200 as requested
     gamma = 0.99
-    batch_size = 64
+    batch_size = 20
     
     rewards_history = []
     
@@ -164,7 +200,7 @@ def train():
                 
                 actor_loss = -(torch.cat(log_probs) * advantages.detach()).mean()
                 critic_loss = advantages.pow(2).mean()
-                loss = actor_loss + 0.5 * critic_loss - 0.05 * torch.cat(entropies).mean()
+                loss = actor_loss + 0.5 * critic_loss - 0.001 * torch.cat(entropies).mean()
                 
                 optimizer.zero_grad()
                 loss.backward()
@@ -197,8 +233,13 @@ def train():
     with torch.no_grad():
         while not done:
             s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            alpha = actor(s_tensor)
-            weights = (alpha / alpha.sum(dim=-1, keepdim=True)).cpu().numpy()[0]
+            # Temperature-sharpened allocation (Dirichlet mean is too uniform with many stocks)
+            log_alpha = torch.log(alpha)
+            weights = torch.softmax(log_alpha / 0.5, dim=-1).cpu().numpy()[0]  # temp=0.5
+            
+            from env_mixture import enforce_portfolio_constraints
+            weights = enforce_portfolio_constraints(weights, max_weight=0.30)
+            
             final_weights = weights
             state, _, done, _, _ = env.step(weights)
             

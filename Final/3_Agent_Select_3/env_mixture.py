@@ -3,21 +3,43 @@ import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
 
+def enforce_portfolio_constraints(weights, max_weight=0.30):
+    weights = np.array(weights).copy()
+    weights = np.clip(weights, 0, 1)
+    weights = weights / (weights.sum() + 1e-8)
+    
+    for _ in range(5):
+        over = weights > max_weight
+        if not over.any():
+            break
+        excess = weights[over] - max_weight
+        total_excess = excess.sum()
+        weights[over] = max_weight
+        
+        under = weights < max_weight
+        if under.any():
+            current_mass = weights[under].sum()
+            if current_mass > 0:
+                weights[under] += total_excess * (weights[under] / current_mass)
+            else:
+                weights[under] += total_excess / under.sum()
+                
+    return weights / (weights.sum() + 1e-8)
+
 class MixturePortfolioEnv(gym.Env):
     """
     Portfolio Environment with Action-Based Risk-Adjusted Rewards 
     and HMM Probability State Augmentation.
     """
     def __init__(self, df, stock_dim, initial_amount, tech_indicator_list, 
-                 regime_probs_df, risk_penalty=0.1, transaction_cost_pct=0.001,
-                 reward_scaling=1e3, lookback=252):
+                 regime_probs_df, transaction_cost_pct=0.001,
+                 reward_scaling=1e3, lookback=20):
         super().__init__()
         self.df = df
         self.stock_dim = stock_dim
         self.initial_amount = initial_amount
         self.tech_indicators = tech_indicator_list
         self.regime_probs_df = regime_probs_df
-        self.risk_penalty = risk_penalty
         self.transaction_cost_pct = transaction_cost_pct
         self.reward_scaling = reward_scaling
         self.lookback = lookback
@@ -62,8 +84,11 @@ class MixturePortfolioEnv(gym.Env):
         return self.state, {}
 
     def step(self, actions):
-        # Normalize actions
-        weights = actions / (np.sum(actions) + 1e-8)
+        # Constraints to match 3_Agent_Select_1
+        try:
+            weights = enforce_portfolio_constraints(actions, max_weight=0.30)
+        except:
+            weights = actions / (np.sum(actions) + 1e-8)
         
         last_day_data = self.df[self.df.date == self.unique_dates[self.day]]
         
@@ -82,8 +107,8 @@ class MixturePortfolioEnv(gym.Env):
         # Calculate Return
         portfolio_return = sum(((new_day_data.close.values / last_day_data.close.values) - 1) * weights)
         
-        # REFINED REWARD: penalize variance (risk) directly chosen by agent
-        reward = (portfolio_return - (self.risk_penalty * port_variance)) * self.reward_scaling
+        # REFINED REWARD: match 3_Agent_Select_1 (just return * scaling)
+        reward = portfolio_return * self.reward_scaling
         
         # Update Portfolio
         self.portfolio_value *= (1 + portfolio_return)
@@ -97,5 +122,3 @@ class MixturePortfolioEnv(gym.Env):
 
 
 
-#try with one agent, two and four -- compare, keep all other paratmers of agents the same 
-# try select one agent, then compare with existing probabilistic mixture system

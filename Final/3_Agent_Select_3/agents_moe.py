@@ -39,8 +39,13 @@ class ActorMoE(nn.Module):
         # regime_probs view is [batch, 4, 1] to multiply with [batch, 4, num_assets]
         combined_logits = torch.sum(expert_outputs * regime_probs.unsqueeze(-1), dim=1) # [batch, num_assets]
         
-        # Dirichlet concentrations
-        alpha = torch.nn.functional.softplus(combined_logits) + 1.0
+        # Normalize across stocks to amplify relative differences
+        # (matches 3_Agent_Select_1's fix for varied allocations)
+        out_mean = combined_logits.mean(dim=-1, keepdim=True)
+        out_std = combined_logits.std(dim=-1, keepdim=True) + 1e-6
+        out_normalized = (combined_logits - out_mean) / out_std
+        out_normalized = torch.clamp(out_normalized, -3, 3)
+        alpha = torch.exp(out_normalized) + 0.1  # alpha range: ~0.15 to ~20.2
         return alpha
 
 class Critic(nn.Module):
