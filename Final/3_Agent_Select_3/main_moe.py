@@ -126,6 +126,11 @@ hmm.fit(df_exo)
 prob_df = hmm.predict_proba(df_exo)
 plot_regime_probs(prob_df, save_path='results/regime_probabilities.png')
 
+# Align dates between df and prob_df to prevent IndexError
+common_dates = set(df['date']).intersection(set(prob_df['date']))
+df = df[df['date'].isin(common_dates)].reset_index(drop=True)
+prob_df = prob_df[prob_df['date'].isin(common_dates)].reset_index(drop=True)
+
 # Env
 env = MixturePortfolioEnv(
     df=df, 
