@@ -27,8 +27,10 @@ TICKER_LIST = [
 ]
 TICKERS = sorted(list(set(TICKER_LIST)))
 
-START_DATE = "2015-01-01"
-END_DATE = "2024-01-01"
+TRAIN_START = "2015-01-01"
+TRAIN_END = "2021-12-31"
+TEST_START = "2022-01-01"
+TEST_END = "2024-01-01"
 if torch.cuda.is_available():
     DEVICE = "cuda"
 elif torch.backends.mps.is_available():
@@ -41,7 +43,7 @@ print(f"Using device: {DEVICE}")
 # Data Pipeline
 # ============================================================================
 print(f"Fetching data for {len(TICKERS)} stocks...")
-df = YahooDownloader(start_date=START_DATE, end_date=END_DATE, ticker_list=TICKERS).fetch_data()
+df = YahooDownloader(start_date=TRAIN_START, end_date=TEST_END, ticker_list=TICKERS).fetch_data()
 fe = FeatureEngineer(use_technical_indicator=True, tech_indicator_list=["macd", "rsi", "cci", "adx"])
 df = fe.preprocess_data(df)
 
@@ -113,16 +115,21 @@ df = add_covariance_matrix(df, lookback=20)
 print("\nFetching Exogenous Benchmarks for Macro HMM...")
 EXO_TICKERS = ['SPY', 'DBC', 'LQD', 'EMB', 'TLT', 'TIP']
 df_exo = YahooDownloader(
-    start_date=START_DATE,
-    end_date=END_DATE,
+    start_date=TRAIN_START,
+    end_date=TEST_END,
     ticker_list=EXO_TICKERS
 ).fetch_data()
 df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
 
+print("\nSplitting into Train and Test Data...")
+train_df_exo = df_exo[(df_exo.date >= TRAIN_START) & (df_exo.date <= TRAIN_END)].reset_index(drop=True)
+
 # HMM
-print("Fitting Probabilistic Macro HMM...")
+print("Fitting Probabilistic Macro HMM on TRAIN DATA ONLY...")
 hmm = ProbabilisticHMM(n_regimes=4)
-hmm.fit(df_exo)
+hmm.fit(train_df_exo)
+
+print("Predicting probabilities for the entire dataset...")
 prob_df = hmm.predict_proba(df_exo)
 plot_regime_probs(prob_df, save_path='results/regime_probabilities.png')
 
@@ -131,13 +138,32 @@ common_dates = set(df['date']).intersection(set(prob_df['date']))
 df = df[df['date'].isin(common_dates)].reset_index(drop=True)
 prob_df = prob_df[prob_df['date'].isin(common_dates)].reset_index(drop=True)
 
-# Env
-env = MixturePortfolioEnv(
-    df=df, 
+train_df = df[(df.date >= TRAIN_START) & (df.date <= TRAIN_END)].reset_index(drop=True)
+test_df  = df[(df.date >= TEST_START)  & (df.date <= TEST_END)].reset_index(drop=True)
+prob_df_train = prob_df[(prob_df.date >= TRAIN_START) & (prob_df.date <= TRAIN_END)].reset_index(drop=True)
+prob_df_test  = prob_df[(prob_df.date >= TEST_START)  & (prob_df.date <= TEST_END)].reset_index(drop=True)
+
+print(f"DEBUG: train_df shape: {train_df.shape}")
+print(f"DEBUG: test_df shape:  {test_df.shape}")
+
+# Env Train
+env_train = MixturePortfolioEnv(
+    df=train_df, 
     stock_dim=len(TICKERS), 
     initial_amount=1000000, 
     tech_indicator_list=["macd", "rsi", "cci", "adx"],
-    regime_probs_df=prob_df,
+    regime_probs_df=prob_df_train,
+    reward_scaling=1000.0,
+    lookback=20
+)
+
+# Env Test
+env_test = MixturePortfolioEnv(
+    df=test_df, 
+    stock_dim=len(TICKERS), 
+    initial_amount=1000000, 
+    tech_indicator_list=["macd", "rsi", "cci", "adx"],
+    regime_probs_df=prob_df_test,
     reward_scaling=1000.0,
     lookback=20
 )
@@ -145,7 +171,7 @@ env = MixturePortfolioEnv(
 # ============================================================================
 # Training (A2C Core)
 # ============================================================================
-def train():
+def train(env):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
     
@@ -268,12 +294,12 @@ def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.
     print(f"Allocation history plot saved to {save_path}")
 
 if __name__ == "__main__":
-    actor, critic, rewards = train()
+    actor, critic, rewards = train(env_train)
     plot_training_progress(rewards)
 
     # --- EVALUATION ---
-    print("\n[Evaluating MoE trained agent...]")
-    state, _ = env.reset()
+    print("\n[Evaluating MoE trained agent on Test Set (Out-of-Sample)...]")
+    state, _ = env_test.reset()
     done = False
     final_weights = None
     all_weights = []
@@ -292,21 +318,21 @@ if __name__ == "__main__":
             
             final_weights = weights
             all_weights.append(weights)
-            state, _, done, _, _ = env.step(weights)
+            state, _, done, _, _ = env_test.step(weights)
             
     # Plot allocation history
     df_weights = pd.DataFrame(all_weights, columns=TICKERS)
-    if hasattr(env, 'unique_dates') and len(env.unique_dates) > len(all_weights):
-        df_weights.index = env.unique_dates[1:len(all_weights)+1]
+    if hasattr(env_test, 'unique_dates') and len(env_test.unique_dates) > len(all_weights):
+        df_weights.index = env_test.unique_dates[1:len(all_weights)+1]
     plot_portfolio_allocation(df_weights)
             
     print("="*60)
-    print("FINAL MOE PERFORMANCE")
+    print("FINAL MOE OUT-OF-SAMPLE PERFORMANCE")
     print("="*60)
-    print(f"Final Portfolio Value: ${env.portfolio_value:,.2f}")
-    ret_df = pd.DataFrame(env.portfolio_return_memory, columns=['return'])
+    print(f"Final Portfolio Value: ${env_test.portfolio_value:,.2f}")
+    ret_df = pd.DataFrame(env_test.portfolio_return_memory, columns=['return'])
     sharpe = (252**0.5) * ret_df['return'].mean() / (ret_df['return'].std() + 1e-8)
-    print(f"Total Return: {(env.portfolio_value/1000000 - 1)*100:.2f}%")
+    print(f"Total Return: {(env_test.portfolio_value/1000000 - 1)*100:.2f}%")
     print(f"Sharpe Ratio: {sharpe:.4f}")
     
     print("\nFinal Portfolio Allocation (All Stocks):")

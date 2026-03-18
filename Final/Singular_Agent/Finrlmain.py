@@ -197,8 +197,10 @@ TICKER_LIST = [
 ]
 TICKER_LIST = sorted(list(set(TICKER_LIST))) # Deduplicate and sort
 
-START_DATE = "2015-01-01"
-END_DATE   = "2024-01-01"
+TRAIN_START = "2015-01-01"
+TRAIN_END   = "2021-12-31"
+TEST_START  = "2022-01-01"
+TEST_END    = "2024-01-01"
 INITIAL_AMOUNT = 1_000_000
 
 if torch.cuda.is_available():
@@ -213,8 +215,8 @@ print(f"Using device: {DEVICE}")
 # FinRL Data Pipeline (OFFICIAL)
 # ============================================================================
 df = YahooDownloader(
-    start_date=START_DATE,
-    end_date=END_DATE,
+    start_date=TRAIN_START,
+    end_date=TEST_END,
     ticker_list=TICKER_LIST
 ).fetch_data()
 
@@ -306,8 +308,16 @@ print(f"DEBUG: df head:\n{df.head()}")
 print(f"DEBUG: Ticker list length: {len(TICKER_LIST)}")
 print("="*50)
 
-env = StockPortfolioEnv(
-    df=df,
+print("\nSplitting into Train and Test Data...")
+train_df = df[(df.date >= TRAIN_START) & (df.date <= TRAIN_END)].reset_index(drop=True)
+test_df = df[(df.date >= TEST_START) & (df.date <= TEST_END)].reset_index(drop=True)
+
+print(f"Train data shape: {train_df.shape}")
+print(f"Test data shape:  {test_df.shape}")
+
+# Create separate environments for training and testing
+env_train = StockPortfolioEnv(
+    df=train_df,
     stock_dim=len(TICKER_LIST),
     hmax=100,  # Required but not used in portfolio allocation
     initial_amount=INITIAL_AMOUNT,
@@ -320,10 +330,29 @@ env = StockPortfolioEnv(
     day=0,
 )
 
-# Update observation space shape in env object manually due to augmentation
-env.observation_space = spaces.Box(
+env_train.observation_space = spaces.Box(
     low=-np.inf, high=np.inf, 
-    shape=(env.lookback, env.state.shape[0], env.state.shape[1]), 
+    shape=(env_train.lookback, env_train.state.shape[0], env_train.state.shape[1]), 
+    dtype=np.float32
+)
+
+env_test = StockPortfolioEnv(
+    df=test_df,
+    stock_dim=len(TICKER_LIST),
+    hmax=100,
+    initial_amount=INITIAL_AMOUNT,
+    transaction_cost_pct=0.001,
+    reward_scaling=1000.0,
+    state_space=len(TICKER_LIST),
+    action_space=len(TICKER_LIST),
+    tech_indicator_list=["macd", "rsi", "cci", "adx"],
+    lookback=20,
+    day=0,
+)
+
+env_test.observation_space = spaces.Box(
+    low=-np.inf, high=np.inf, 
+    shape=(env_test.lookback, env_test.state.shape[0], env_test.state.shape[1]), 
     dtype=np.float32
 )
 
@@ -552,14 +581,14 @@ def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.
 # ============================================================================
 # Train Agent
 # ============================================================================
-actor, critic, rewards = train_a2c(env)
+actor, critic, rewards = train_a2c(env_train)
 plot_training_progress(rewards)
 
 # ============================================================================
 # Evaluation
 # ============================================================================
-print("\n[Evaluating trained agent...]")
-state, _ = env.reset()
+print("\n[Evaluating trained agent on Test Set (Out-of-Sample)...]")
+state, _ = env_test.reset()
 done = False
 final_weights = None
 all_weights = []
@@ -578,23 +607,23 @@ while not done:
         final_weights = weights # Keep track of last weights
         all_weights.append(weights)
         
-    state, _, done, _, _ = env.step(weights)
+    state, _, done, _, _ = env_test.step(weights)
 
 # Plot allocation history
 df_weights = pd.DataFrame(all_weights, columns=TICKER_LIST)
 # If dates are available in env, use them
-if hasattr(env, 'date_memory') and len(env.date_memory) > len(all_weights):
-    df_weights.index = env.date_memory[1:len(all_weights)+1]
+if hasattr(env_test, 'date_memory') and len(env_test.date_memory) > len(all_weights):
+    df_weights.index = env_test.date_memory[1:len(all_weights)+1]
 plot_portfolio_allocation(df_weights)
 
 print("=" * 60)
-print("RESULTS")
+print("OUT-OF-SAMPLE RESULTS")
 print("=" * 60)
-print(f"Final Portfolio Value: ${env.portfolio_value:,.2f}")
-print(f"Total Return: {(env.portfolio_value / INITIAL_AMOUNT - 1) * 100:.2f}%")
+print(f"Final Portfolio Value: ${env_test.portfolio_value:,.2f}")
+print(f"Total Return: {(env_test.portfolio_value / INITIAL_AMOUNT - 1) * 100:.2f}%")
 
 # Calculate Sharpe
-returns_df = pd.DataFrame(env.portfolio_return_memory)
+returns_df = pd.DataFrame(env_test.portfolio_return_memory)
 if returns_df.std().iloc[0] != 0:
     sharpe = (252**0.5) * returns_df.mean().iloc[0] / returns_df.std().iloc[0]
     print(f"Sharpe Ratio: {sharpe:.4f}")
