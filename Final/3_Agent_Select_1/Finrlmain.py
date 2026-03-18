@@ -474,7 +474,7 @@ class Critic(nn.Module):
 # ============================================================================
 def train_a2c(
     env,
-    epochs=1000,
+    epochs=200,
     gamma=0.99,
     lr=1e-4,    # Slightly lower for Dirichlet stability
     value_coef=0.5,
