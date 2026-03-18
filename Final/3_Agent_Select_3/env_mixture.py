@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-import gymnasium as gym
-from gymnasium import spaces
+import gym
+from gym import spaces
 
 def enforce_portfolio_constraints(weights, max_weight=0.30):
     weights = np.array(weights).copy()

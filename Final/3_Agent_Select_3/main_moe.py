@@ -217,36 +217,88 @@ def train():
         if ep % 20 == 0:
             print(f"Episode {ep:03d} | Reward: {ep_reward:.2f} | PortVal: ${env.portfolio_value:,.2f}")
 
-    # Plot results in local folder
+    return actor, critic, rewards_history
+
+def plot_training_progress(rewards, save_path='results/finrlmain_training.png'):
+    """Plot training progress"""
+    import os
     import matplotlib.pyplot as plt
+    os.makedirs('results', exist_ok=True)
+    
     plt.figure(figsize=(10, 6))
-    plt.plot(rewards_history)
-    plt.title('MoE Training Progress')
+    plt.plot(rewards, alpha=0.6, label='Episode Reward')
+    
+    window = 20
+    if len(rewards) >= window:
+        moving_avg = pd.Series(rewards).rolling(window=window).mean()
+        plt.plot(moving_avg, linewidth=2, label=f'{window}-Episode Moving Average')
+    
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
-    plt.savefig('moe_training_results.png')
+    plt.title('MoE A2C Training Progress')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print("Training results image saved to 'moe_training_results.png'")
+    print(f"Training progress plot saved to {save_path}")
+    
+def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.png'):
+    """Plot portfolio allocation over time using a stacked area chart"""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs('results', exist_ok=True)
+    
+    plt.figure(figsize=(12, 7))
+    ticker_cols = df_weights.columns
+    avg_alloc = df_weights.mean().sort_values(ascending=False)
+    sorted_tickers = avg_alloc.index.tolist()
+    
+    plt.stackplot(df_weights.index, 
+                  [df_weights[tic] for tic in sorted_tickers], 
+                  labels=sorted_tickers, 
+                  alpha=0.8)
+    
+    plt.title('Portfolio Allocation History (MoE Evolution)', fontsize=14)
+    plt.xlabel('Date / Step', fontsize=12)
+    plt.ylabel('Weight', fontsize=12)
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, ncol=2)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Allocation history plot saved to {save_path}")
+
+if __name__ == "__main__":
+    actor, critic, rewards = train()
+    plot_training_progress(rewards)
 
     # --- EVALUATION ---
     print("\n[Evaluating MoE trained agent...]")
     state, _ = env.reset()
     done = False
     final_weights = None
+    all_weights = []
     
     actor.eval()
     with torch.no_grad():
         while not done:
             s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+            alpha = actor(s_tensor)
             # Temperature-sharpened allocation (Dirichlet mean is too uniform with many stocks)
             log_alpha = torch.log(alpha)
-            weights = torch.softmax(log_alpha / 0.5, dim=-1).cpu().numpy()[0]  # temp=0.5
+            weights = torch.softmax(log_alpha / 0.5, dim=-1).detach().cpu().numpy()[0]  # temp=0.5
             
             from env_mixture import enforce_portfolio_constraints
             weights = enforce_portfolio_constraints(weights, max_weight=0.30)
             
             final_weights = weights
+            all_weights.append(weights)
             state, _, done, _, _ = env.step(weights)
+            
+    # Plot allocation history
+    df_weights = pd.DataFrame(all_weights, columns=TICKERS)
+    if hasattr(env, 'unique_dates') and len(env.unique_dates) > len(all_weights):
+        df_weights.index = env.unique_dates[1:len(all_weights)+1]
+    plot_portfolio_allocation(df_weights)
             
     print("="*60)
     print("FINAL MOE PERFORMANCE")
@@ -261,6 +313,3 @@ def train():
     for i, tic in enumerate(TICKERS):
         print(f"  {tic:5s}: {final_weights[i]*100:6.2f}%")
     print("="*60)
-
-if __name__ == "__main__":
-    train()
