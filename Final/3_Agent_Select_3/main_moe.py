@@ -320,6 +320,213 @@ def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.
     plt.close()
     print(f"Allocation history plot saved to {save_path}")
 
+# ============================================================================
+# Metrics helpers
+# ============================================================================
+def compute_metrics(portfolio_return_memory, asset_memory, initial_amount,
+                    periods_per_year=252):
+    """
+    Compute scalar performance metrics for the test period.
+
+    Parameters
+    ----------
+    portfolio_return_memory : list  [0, r1, r2, ...] — first element is 0 (reset day)
+    asset_memory            : list  [v0, v1, v2, ...] — v0 = initial_amount
+    initial_amount          : float
+    periods_per_year        : int   trading days per year (default 252)
+
+    Returns
+    -------
+    dict of scalar metrics (all rounded for readability)
+    """
+    returns = np.array(portfolio_return_memory[1:])   # drop the initial 0
+    values  = np.array(asset_memory)
+
+    total_return_pct = (values[-1] / initial_amount - 1) * 100
+
+    mean_r = returns.mean()
+    std_r  = returns.std(ddof=1) + 1e-8
+    annualised_sharpe = (mean_r / std_r) * np.sqrt(periods_per_year)
+
+    peak        = np.maximum.accumulate(values)
+    drawdowns   = (peak - values) / (peak + 1e-8)
+    max_drawdown_pct = drawdowns.max() * 100
+
+    downside = returns[returns < 0]
+    down_std = (np.sqrt(np.mean(downside ** 2)) if len(downside) > 0 else 1e-8) + 1e-8
+    sortino_ratio = (mean_r / down_std) * np.sqrt(periods_per_year)
+
+    return {
+        "Total Return (%)":      round(float(total_return_pct),   4),
+        "Annualised Sharpe":     round(float(annualised_sharpe),  4),
+        "Max Drawdown (%)":      round(float(max_drawdown_pct),   4),
+        "Sortino Ratio":         round(float(sortino_ratio),      4),
+        "N Trading Days":        int(len(returns)),
+        "Final Value ($)":       round(float(values[-1]),         2),
+    }
+
+
+def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
+                           initial_amount, title_prefix='',
+                           save_path='results/metrics_over_time.png',
+                           rolling_window=20):
+    """
+    4-panel figure showing performance metrics across the test period:
+      Panel 1 — Cumulative Return (%)
+      Panel 2 — Rolling Annualised Sharpe Ratio   (rolling_window-day)
+      Panel 3 — Running Maximum Drawdown (%)
+      Panel 4 — Rolling Annualised Sortino Ratio  (rolling_window-day)
+
+    Does NOT replace any existing plot; saved to a separate file.
+    """
+    import matplotlib.pyplot as plt
+    os.makedirs('results', exist_ok=True)
+
+    returns_arr = np.array(portfolio_return_memory[1:])   # length N
+    values      = np.array(asset_memory)                  # length N+1
+    plot_dates  = list(dates)[:len(values)]               # length N+1
+
+    # ── 1. Cumulative return (%) ─────────────────────────────────────────
+    cum_return = (values / initial_amount - 1) * 100      # length N+1
+
+    # ── 2. Rolling annualised Sharpe ──────────────────────────────────────
+    ret_s       = pd.Series(returns_arr)
+    roll_mean   = ret_s.rolling(rolling_window).mean()
+    roll_std    = ret_s.rolling(rolling_window).std() + 1e-8
+    roll_sharpe = (roll_mean / roll_std) * np.sqrt(252)
+    # Prepend NaN so length matches values (N → N+1)
+    roll_sharpe_full = np.concatenate([[np.nan], roll_sharpe.values])
+
+    # ── 3. Running maximum drawdown (%) ──────────────────────────────────
+    peak     = np.maximum.accumulate(values)
+    drawdown = (peak - values) / (peak + 1e-8) * 100      # length N+1, positive = loss
+
+    # ── 4. Rolling annualised Sortino ─────────────────────────────────────
+    def _rolling_sortino(arr, w):
+        out = np.full(len(arr), np.nan)
+        for i in range(w - 1, len(arr)):
+            window  = arr[i - w + 1: i + 1]
+            m       = window.mean()
+            d       = window[window < 0]
+            d_std   = (np.sqrt(np.mean(d ** 2)) if len(d) > 0 else 1e-8) + 1e-8
+            out[i]  = (m / d_std) * np.sqrt(252)
+        return out
+
+    roll_sortino_full = np.concatenate(
+        [[np.nan], _rolling_sortino(returns_arr, rolling_window)]
+    )
+
+    # ── Plot ──────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(4, 1, figsize=(14, 18), sharex=True)
+    fig.suptitle(
+        f"{title_prefix} — Performance Metrics Over Time (Out-of-Sample Test)",
+        fontsize=13, fontweight='bold'
+    )
+
+    # Panel 1: Cumulative return
+    ax = axes[0]
+    ax.plot(plot_dates, cum_return, color='steelblue', lw=1.5)
+    ax.fill_between(plot_dates, 0, cum_return,
+                    where=(cum_return >= 0), alpha=0.20, color='green', label='Gain')
+    ax.fill_between(plot_dates, 0, cum_return,
+                    where=(cum_return <  0), alpha=0.20, color='red',   label='Loss')
+    ax.axhline(0, color='grey', ls='--', lw=0.8)
+    ax.set_ylabel('Return (%)', fontsize=10)
+    ax.set_title('Cumulative Return (%)', fontsize=10, fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel 2: Rolling Sharpe
+    ax = axes[1]
+    ax.plot(plot_dates, roll_sharpe_full, color='purple', lw=1.5,
+            label=f'{rolling_window}-day rolling')
+    ax.axhline(0,   color='grey',  ls='--', lw=0.8)
+    ax.axhline(1.0, color='green', ls=':',  lw=0.8, alpha=0.7, label='Sharpe = 1')
+    ax.set_ylabel('Sharpe (ann.)', fontsize=10)
+    ax.set_title(f'Rolling {rolling_window}-Day Annualised Sharpe Ratio',
+                 fontsize=10, fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel 3: Running max drawdown (plotted as negative so valleys go down)
+    ax = axes[2]
+    ax.fill_between(plot_dates, 0, -drawdown,
+                    color='red', alpha=0.35, label='Drawdown depth')
+    ax.plot(plot_dates, -drawdown, color='darkred', lw=1, alpha=0.8)
+    ax.set_ylabel('Drawdown (%)', fontsize=10)
+    ax.set_title('Running Maximum Drawdown % (from rolling peak)',
+                 fontsize=10, fontweight='bold')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel 4: Rolling Sortino
+    ax = axes[3]
+    ax.plot(plot_dates, roll_sortino_full, color='darkorange', lw=1.5,
+            label=f'{rolling_window}-day rolling')
+    ax.axhline(0,   color='grey',  ls='--', lw=0.8)
+    ax.axhline(1.0, color='green', ls=':',  lw=0.8, alpha=0.7, label='Sortino = 1')
+    ax.set_ylabel('Sortino (ann.)', fontsize=10)
+    ax.set_title(f'Rolling {rolling_window}-Day Annualised Sortino Ratio',
+                 fontsize=10, fontweight='bold')
+    ax.set_xlabel('Date', fontsize=10)
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    plt.xticks(rotation=30, ha='right')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Metrics over time plot saved to {save_path}")
+
+
+# ============================================================================
+# run_experiment — callable by multi-seed runner or standalone
+# ============================================================================
+def run_experiment(seed: int = 0, out_dir: str = "results/moe") -> dict:
+    """
+    One full train + evaluate cycle for a given random seed.
+
+    Returns a dict with scalar performance metrics, 'seed', and 'rewards' list.
+    Per-seed plots are written to out_dir/seed_{seed}_*.png.
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # ── Train ─────────────────────────────────────────────────────────────
+    actor, critic, rewards = train(env_train)
+    plot_training_progress(rewards, save_path=f"{out_dir}/seed_{seed}_training.png")
+
+    # ── Greedy evaluation ─────────────────────────────────────────────────
+    print("\n[Evaluating MoE trained agent on Test Set (Out-of-Sample)...]")
+    state, _ = env_test.reset()
+    done = False
+    final_weights = None
+    actor.eval()
+    with torch.no_grad():
+        while not done:
+            s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+            mean, _ = actor(s_tensor)
+            weights_raw = mean.detach().cpu().numpy()[0]
+            final_weights = enforce_portfolio_constraints(weights_raw)
+            state, _, done, _, _ = env_test.step(weights_raw)
+
+    # ── Scalar metrics ────────────────────────────────────────────────────
+    metrics = compute_metrics(
+        env_test.portfolio_return_memory, env_test.asset_memory, 1_000_000
+    )
+    metrics['seed']    = seed
+    metrics['rewards'] = rewards
+
+    # ── Metrics-over-time 4-panel figure ─────────────────────────────────
+    date_memory = list(env_test.unique_dates[:len(env_test.asset_memory)])
+    plot_metrics_over_time(
+        env_test.portfolio_return_memory, env_test.asset_memory,
+        date_memory, 1_000_000,
+        title_prefix=f"Soft MoE (Select_3) — Seed {seed}",
+        save_path=f"{out_dir}/seed_{seed}_metrics_over_time.png",
+        rolling_window=20,
+    )
+
+    return metrics
+
+
 if __name__ == "__main__":
     actor, critic, rewards = train(env_train)
     plot_training_progress(rewards)
@@ -408,3 +615,16 @@ if __name__ == "__main__":
     for i, tic in enumerate(TICKERS):
         print(f"  {tic:5s}: {final_weights[i]*100:6.2f}%")
     print("="*60)
+
+    metrics = compute_metrics(env_test.portfolio_return_memory, env_test.asset_memory, 1_000_000)
+    print("\nCOMPREHENSIVE PERFORMANCE METRICS (Soft MoE)")
+    print("-" * 44)
+    for k, v in metrics.items():
+        print(f"  {k:<25s}: {v}")
+    print("-" * 44)
+    plot_metrics_over_time(
+        env_test.portfolio_return_memory, env_test.asset_memory,
+        date_memory, 1_000_000,
+        title_prefix="Soft MoE (Select_3)",
+        save_path="results/moe_metrics_over_time.png", rolling_window=20,
+    )
