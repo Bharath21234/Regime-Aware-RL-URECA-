@@ -1,216 +1,170 @@
 """
-Portfolio Allocation using A2C with FinRL Official Environment
-Author: (Your Name)
+Portfolio Allocation via A2C — Hard Regime Routing
+4 specialist heads; the HMM's predicted next-regime index activates one exclusively.
 
-- Uses FinRL's StockPortfolioEnv (official)
-- Custom A2C implementation
-- Continuous portfolio weights (simplex-safe)
+State  : flatten(cov_matrix [N×N] | tech_indicators [4×N]) + [regime_label]
+         shape: (N²+4N+1,)   ← flat 1D, no lookback window
+Gating : hard argmax — x[:, -1].long() selects which head fires
+Reward : mean-variance penalised return − turnover penalty − concentration penalty
+
+Controlled ablation: identical env/reward/training to Baseline and Select_3.
+Only the appended state signal and head-selection mechanism differ.
 """
 
-# ============================================================================
-# Imports
-# ============================================================================
+import os
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import gym
+from gym import spaces
+
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer
-from gym import spaces
-from gym.utils import seeding
 from hmm import MarketRegimeHMM, plot_regimes
-import os
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 # ============================================================================
-# Helper Functions
+# Portfolio constraint — IDENTICAL across all three variants
 # ============================================================================
-def enforce_portfolio_constraints(weights, max_weight=0.60): # Lowered from 0.20 to 0.10 for spread
+MIN_WEIGHT = -0.05
+MAX_WEIGHT =  0.20
+
+def enforce_portfolio_constraints(weights):
+    """Euclidean projection onto the bounded simplex via bisection search.
+    Guarantees: MIN_WEIGHT <= w_i <= MAX_WEIGHT and sum(w) == 1.
     """
-    Robustly enforce maximum weight constraint by iteratively capping and redistributing.
-    Guarantees that no weight exceeds max_weight (unless max_weight < 1/N).
-    """
-    weights = np.array(weights).copy()
-    weights = np.clip(weights, 0, 1)
-    weights = weights / (weights.sum() + 1e-8)
-    
-    # 5 iterations is usually plenty for convergence
-    for _ in range(5):
-        over = weights > max_weight
-        if not over.any():
+    weights = np.array(weights, dtype=np.float32)
+    mu_min = float(np.min(weights)) - MAX_WEIGHT - 1.0
+    mu_max = float(np.max(weights)) - MIN_WEIGHT + 1.0
+    mu = 0.0
+    for _ in range(50):
+        mu = (mu_min + mu_max) / 2.0
+        clipped = np.clip(weights - mu, MIN_WEIGHT, MAX_WEIGHT)
+        s = clipped.sum()
+        if abs(s - 1.0) < 1e-6:
             break
-            
-        # Calculate excess mass
-        excess = weights[over] - max_weight
-        total_excess = excess.sum()
-        
-        # Cap the overweight stocks
-        weights[over] = max_weight
-        
-        # Distribute excess to under-weight stocks
-        under = weights < max_weight
-        if under.any():
-            # Distribute proportionally to preserve relative preferences
-            current_mass = weights[under].sum()
-            if current_mass > 0:
-                weights[under] += total_excess * (weights[under] / current_mass)
-            else:
-                weights[under] += total_excess / under.sum()
-            
-    # Final safety normalization
-    return weights / (weights.sum() + 1e-8)
+        if s > 1.0:
+            mu_min = mu
+        else:
+            mu_max = mu
+    return np.clip(weights - mu, MIN_WEIGHT, MAX_WEIGHT).astype(np.float32)
 
-from finrl.meta.env_portfolio_allocation.env_portfolio import StockPortfolioEnv
+# ============================================================================
+# Environment — flat state + ONE scalar regime label at the end
+# ============================================================================
+class HardRegimePortfolioEnv(gym.Env):
+    """
+    Flat-state portfolio environment with a hard HMM regime label appended.
+    State = flatten(cov_matrix || tech_indicators) + [regime_label]
+            shape: (N²+4N+1,)
+    The regime_label is a single float (0.0, 1.0, 2.0, or 3.0).
+    The actor reads x[:, -1].long() to route to the correct specialist head.
+    Reward = (risk-adj return − turnover − concentration) × reward_scaling
+    """
+    def __init__(self, df, stock_dim, initial_amount, tech_indicator_list,
+                 regime_df, reward_scaling=1000.0):
+        """
+        regime_df : DataFrame with columns ['date', 'future_regime']
+                    where future_regime is the HMM-predicted next-step regime (int 0-3).
+        """
+        super().__init__()
+        self.df = df
+        self.stock_dim = stock_dim
+        self.initial_amount = initial_amount
+        self.tech_indicators = tech_indicator_list
+        self.regime_df = regime_df
+        self.reward_scaling = reward_scaling
 
-# Resolving FinRL compatibility issues with local overrides
-def _init_override(self, df, stock_dim, hmax, initial_amount, transaction_cost_pct, reward_scaling, state_space, action_space, tech_indicator_list, turbulence_threshold=None, lookback=252, day=0, **kwargs):
-    self.day = day
-    self.lookback = lookback
-    self.stock_dim = stock_dim
-    self.hmax = hmax
-    self.initial_amount = initial_amount
-    self.transaction_cost_pct = transaction_cost_pct
-    self.reward_scaling = reward_scaling
-    self.state_space = state_space
-    self.action_space_dim = action_space
-    self.tech_indicator_list = tech_indicator_list
-    self.action_space = spaces.Box(low=0, high=1, shape=(self.action_space_dim,), dtype=np.float32)
-    self.terminal = False
-    self.turbulence_threshold = turbulence_threshold
-    
-    # Pre-process data into NumPy arrays for MUCH faster lookup
-    self.unique_dates = df.date.unique()
-    
-    # Store prices and technical indicators in a dictionary of matrices keyed by date
-    # Or better yet, a 3D NumPy array [num_dates, num_indicators, num_stocks]
-    # For now, let's use a dictionary of pre-extracted rows to keep it simple but fast
-    self.data_dict = {}
-    self.covs_dict = {}
-    self.regime_dict = {}
-    
-    regime_df = kwargs.get('regime_df', None)
-    
-    # Group by date once
-    for date, group in df.groupby('date'):
-        # Sort by tic to ensure consistency
-        group = group.sort_values('tic')
-        self.covs_dict[date] = group["cov_list"].iloc[0]
-        self.data_dict[date] = group
-        # Technical indicators as matrix
-        tech_array = np.array([group[tech].values for tech in self.tech_indicator_list])
-        tech_array = np.nan_to_num(tech_array) # Safety check
-        
-        # Combine covs and tech safely
-        covs = np.nan_to_num(self.covs_dict[date])
-        state_base = np.vstack([covs, tech_array]).astype(np.float32)
-        
-        # Add regime info
-        current_regime = 0
-        if regime_df is not None:
-            regime_match = regime_df.loc[regime_df.date == date, 'future_regime']
-            if not regime_match.empty:
-                current_regime = regime_match.values[0]
-        
-        regime_row = np.full((1, state_base.shape[1]), current_regime).astype(np.float32)
-        self.regime_dict[date] = np.vstack([state_base, regime_row])
+        self.unique_dates = sorted(df.date.unique())
+        self.day = 0
 
-    # Initial state
-    date = self.unique_dates[self.day]
-    self.state = self.regime_dict[date]
-    self.state_memory = [self.state] * self.lookback
-    self.portfolio_value = self.initial_amount
-    self.asset_memory = [self.initial_amount]
-    self.portfolio_return_memory = [0]
-    self.actions_memory = [[1/self.stock_dim]*self.stock_dim]
-    self.date_memory = [date]
+        self.action_space = spaces.Box(
+            low=MIN_WEIGHT, high=MAX_WEIGHT,
+            shape=(self.stock_dim,), dtype=np.float32
+        )
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=(len(self._get_state()),), dtype=np.float32
+        )
 
-def _step_override(self, actions):
-    self.terminal = self.day >= len(self.unique_dates) - 1
-    if self.terminal:
-        df_rets = pd.DataFrame(self.portfolio_return_memory)
-        df_rets.columns = ['daily_return']
-        if df_rets['daily_return'].std() != 0:
-            self.sharpe = (252**0.5) * df_rets['daily_return'].mean() / df_rets['daily_return'].std()
-        return np.array(self.state_memory), self.reward, self.terminal, False, {}
-    else:
-        try:
-            weights = enforce_portfolio_constraints(actions, max_weight=0.30)
-        except:
-            weights = actions
+    def _get_state(self):
+        date = self.unique_dates[self.day]
+        data = self.df[self.df.date == date].sort_values('tic')
+        covs  = np.nan_to_num(np.array(data["cov_list"].iloc[0])).astype(np.float32)
+        techs = np.nan_to_num(
+            np.array([data[t].values for t in self.tech_indicators])
+        ).astype(np.float32)
+        base = np.vstack([covs, techs]).flatten()
+
+        match = self.regime_df.loc[self.regime_df.date == date, 'future_regime']
+        regime_label = float(match.values[0]) if not match.empty else 0.0
+        return np.concatenate([base, [regime_label]])
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.day = 0
+        self.portfolio_value = self.initial_amount
+        self.asset_memory = [self.initial_amount]
+        self.portfolio_return_memory = [0]
+        self.date_memory = [self.unique_dates[0]]
+        self.actions_memory = []
+        self.state = self._get_state()
+        return self.state, {}
+
+    def step(self, actions):
+        weights = enforce_portfolio_constraints(actions)
+
+        last_data = self.df[self.df.date == self.unique_dates[self.day]].sort_values('tic')
+        covs = np.nan_to_num(np.array(last_data["cov_list"].iloc[0]))
+
+        turnover = np.sum(np.abs(weights - self.actions_memory[-1])) \
+                   if self.actions_memory else 0.0
         self.actions_memory.append(weights)
-        
-        last_date = self.unique_dates[self.day]
-        last_day_data = self.data_dict[last_date]
-        
+
         self.day += 1
-        current_date = self.unique_dates[self.day]
-        current_day_data = self.data_dict[current_date]
-        
-        self.state = self.regime_dict[current_date]
-        
-        # Update state memory
-        self.state_memory.pop(0)
-        self.state_memory.append(self.state)
+        self.terminal = self.day >= len(self.unique_dates) - 1
+        new_data = self.df[self.df.date == self.unique_dates[self.day]].sort_values('tic')
 
-        # Vectorized portfolio return calculation
-        # last_day_data and current_day_data are sorted by tic
-        portfolio_return = np.sum(((current_day_data.close.values / last_day_data.close.values) - 1) * weights)
-        
-        self.portfolio_return_memory.append(portfolio_return)
-        self.date_memory.append(current_date)
-        self.portfolio_value = self.portfolio_value * (1 + portfolio_return)
+        ret = np.sum(((new_data.close.values / last_data.close.values) - 1) * weights)
+        var = float(np.dot(weights, np.dot(covs, weights)))
+
+        # Mean-variance utility  − turnover cost  − HHI concentration penalty
+        reward = (
+            ret
+            - 0.5 * 0.5 * var       # risk aversion λ=0.5, factor 0.5 from MV utility
+            - 0.0001 * turnover
+            - 0.005 * np.sum(weights ** 2)
+        ) * self.reward_scaling
+
+        self.portfolio_value *= (1 + ret)
+        self.portfolio_return_memory.append(ret)
         self.asset_memory.append(self.portfolio_value)
-        self.reward = portfolio_return * self.reward_scaling
-        return np.array(self.state_memory), self.reward, self.terminal, False, {}
-
-def _reset_override(self, seed=None, options=None):
-    if seed is not None:
-        self._seed(seed)
-    self.asset_memory = [self.initial_amount]
-    self.day = 0
-    date = self.unique_dates[self.day]
-    self.state = self.regime_dict[date]
-    self.state_memory = [self.state] * self.lookback
-    self.portfolio_value = self.initial_amount
-    self.terminal = False
-    self.portfolio_return_memory = [0]
-    self.actions_memory = [[1/self.stock_dim]*self.stock_dim]
-    self.date_memory = [date]
-    return np.array(self.state_memory), {}
-
-def _seed_override(self, seed=None):
-    self.np_random, seed = seeding.np_random(seed)
-    return [seed]
-
-# Inject overrides
-StockPortfolioEnv.__init__ = _init_override
-StockPortfolioEnv.step = _step_override
-StockPortfolioEnv.reset = _reset_override
-StockPortfolioEnv._seed = _seed_override
+        self.date_memory.append(self.unique_dates[self.day])
+        self.state = self._get_state()
+        return self.state, reward, self.terminal, False, {}
 
 # ============================================================================
 # Configuration
 # ============================================================================
-TICKER_LIST = [
-    'AAPL','MSFT','NVDA','GOOGL','META',
-    'JNJ','UNH','PFE',
-    'JPM','BAC','GS',
-    'XOM','CVX',
-    'WMT','PG',
-    'BA','CAT',
-    # Added even more stocks for a broader universe (~40)
-    'AMZN', 'AMD', 'NFLX',  # Tech/Growth
-    'V', 'HD', 'MCD',       # Consumer/Finance
-    'KO', 'PEP',            # Defensive/Staples
-    'DIS', 'COST',          # Entertainment/Retail
-    'CRM', 'INTC', 'TXN',   # Semiconductors/Software
-    'GE', 'MMM', 'HON',     # Industrials
-    'C', 'GS', 'MS',        # Investment Banking
-    'ABT', 'ABBV', 'MRK'    # More Healthcare
-]
-TICKER_LIST = sorted(list(set(TICKER_LIST))) # Deduplicate and sort
+TICKER_LIST = sorted(list(set([
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'META',
+    'JNJ',  'UNH',  'PFE',
+    'JPM',  'BAC',  'GS',
+    'XOM',  'CVX',
+    'WMT',  'PG',
+    'BA',   'CAT',
+    'AMZN', 'AMD',  'NFLX',
+    'V',    'HD',   'MCD',
+    'KO',   'PEP',
+    'DIS',  'COST',
+    'CRM',  'INTC', 'TXN',
+    'GE',   'MMM',  'HON',
+    'C',    'MS',
+    'ABT',  'ABBV', 'MRK',
+])))
 
 TRAIN_START = "2015-01-01"
 TRAIN_END   = "2021-12-31"
@@ -218,434 +172,290 @@ TEST_START  = "2022-01-01"
 TEST_END    = "2024-01-01"
 INITIAL_AMOUNT = 1_000_000
 
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
-else:
-    DEVICE = "cpu"
+DEVICE = (
+    "cuda" if torch.cuda.is_available() else
+    "mps"  if torch.backends.mps.is_available() else
+    "cpu"
+)
 print(f"Using device: {DEVICE}")
 
 # ============================================================================
-# FinRL Data Pipeline (OFFICIAL)
+# Data Pipeline
 # ============================================================================
 df = YahooDownloader(
-    start_date=TRAIN_START,
-    end_date=TEST_END,
-    ticker_list=TICKER_LIST
+    start_date=TRAIN_START, end_date=TEST_END, ticker_list=TICKER_LIST
 ).fetch_data()
 
 fe = FeatureEngineer(
     use_technical_indicator=True,
     tech_indicator_list=["macd", "rsi", "cci", "adx"],
-    use_vix=False,
-    use_turbulence=False,
-    user_defined_feature=False
+    use_vix=False, use_turbulence=False, user_defined_feature=False
 )
-
 df = fe.preprocess_data(df)
 
-# --- NEW: Fetch Exogenous Features (Benchmarks) ---
-print("\nFetching Exogenous Benchmarks for HMM...")
+# Exogenous macro ETFs for HMM training
+print("\nFetching exogenous macro ETFs for HMM...")
 EXO_TICKERS = ['SPY', 'DBC', 'LQD', 'EMB', 'TLT', 'TIP']
 df_exo = YahooDownloader(
-    start_date=TRAIN_START,
-    end_date=TEST_END,
-    ticker_list=EXO_TICKERS
+    start_date=TRAIN_START, end_date=TEST_END, ticker_list=EXO_TICKERS
 ).fetch_data()
-# Clean and align exogenous data
 df_exo = df_exo.sort_values(["date", "tic"]).reset_index(drop=True)
-# --------------------------------------------------
 
-# --- NEW: Robust Data Cleaning ---
-print("\nCleaning data for consistency...")
-df = df.dropna()
-df = df.drop_duplicates(subset=["date", "tic"])
-# Ensure all tickers have data for the same set of dates
-df_counts = df.groupby('tic').size()
-max_counts = df_counts.max()
-# Filter tickers that have the maximum number of observations
-tickers_to_keep = df_counts[df_counts == max_counts].index.tolist()
-if len(tickers_to_keep) < len(df_counts):
-    print(f"Dropping {len(df_counts) - len(tickers_to_keep)} tickers with incomplete data.")
-df = df[df.tic.isin(tickers_to_keep)]
+df = df.dropna().drop_duplicates(subset=["date", "tic"])
+counts = df.groupby('tic').size()
+df = df[df.tic.isin(counts[counts == counts.max()].index)]
 df = df.sort_values(["date", "tic"]).reset_index(drop=True)
-TICKER_LIST = sorted(df.tic.unique().tolist()) # Update list to match actual data
-# ---------------------------------
+TICKER_LIST = sorted(df.tic.unique().tolist())
+print(f"Using {len(TICKER_LIST)} tickers after data cleaning.")
 
-# Add Covariance Matrix (Required for StockPortfolioEnv)
+
 def add_covariance_matrix(df, lookback=20):
-    """
-    Optimized covariance matrix calculation.
-    Pivots once and uses a rolling window on NumPy arrays.
-    """
     df = df.sort_values(['date', 'tic'], ignore_index=True)
-    
-    # Pivot to get a matrix of prices: dates as rows, tickers as columns
-    price_pivot = df.pivot_table(index='date', columns='tic', values='close')
-    # Use ffill and bfill to handle potential missing values
-    price_pivot = price_pivot.ffill().bfill()
-    
-    # Calculate daily returns
-    returns = price_pivot.pct_change()
-    
-    unique_dates = returns.index.tolist()
+    pivot = df.pivot_table(index='date', columns='tic', values='close').ffill().bfill()
+    rets = pivot.pct_change()
+    rets_np = rets.values
+    dates = rets.index.tolist()
     cov_list = []
-    
-    # Pre-calculate covariance matrices using rolling window on NumPy array
-    returns_np = returns.values
-    
-    for i in range(len(unique_dates)):
-        # Ensure we have at least 2 rows for covariance, otherwise use identity or zero
-        if i < 2:
-            cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
-        else:
-            start_idx = max(0, i - lookback + 1)
-            window = returns_np[start_idx:i+1]
-            # Filter out NaNs in the window if any
-            window = window[~np.isnan(window).any(axis=1)]
-            
-            if window.shape[0] < 2:
-                cov = np.zeros((returns_np.shape[1], returns_np.shape[1]))
-            else:
-                cov = np.cov(window, rowvar=False)
-        
-        # Replace any remaining NaNs (e.g. from constant returns) with 0
-        cov = np.nan_to_num(cov)
-        cov_list.append(cov)
-    
-    # Create a mapping of date to covariance matrix
-    df_cov = pd.DataFrame({'date': unique_dates, 'cov_list': cov_list})
-    
-    # Merge back to original dataframe (drops the first row since returns[0] is NaN)
-    df = df.merge(df_cov, on='date')
-    df = df.dropna(subset=['cov_list'])
-    df = df.sort_values(['date', 'tic']).reset_index(drop=True)
-    return df
+    for i in range(len(dates)):
+        window = rets_np[max(0, i - lookback + 1):i + 1]
+        window = window[~np.isnan(window).any(axis=1)]
+        cov = (np.cov(window, rowvar=False)
+               if window.shape[0] >= 2
+               else np.zeros((rets_np.shape[1],) * 2))
+        cov_list.append(np.nan_to_num(cov))
+    df = df.merge(pd.DataFrame({'date': dates, 'cov_list': cov_list}), on='date')
+    return df.dropna(subset=['cov_list']).sort_values(['date', 'tic']).reset_index(drop=True)
 
-print("\nComputing covariance matrix...")
-df = add_covariance_matrix(df, lookback=20)
-print(f"Data shape with covariance: {df.shape}")
 
-print("="*50)
+print("Computing covariance matrices...")
+df = add_covariance_matrix(df)
 
-print("\nSplitting into Train and Test Data...")
-train_df_exo = df_exo[(df_exo.date >= TRAIN_START) & (df_exo.date <= TRAIN_END)].reset_index(drop=True)
-
-# --- NEW: HMM Regime Fitting ---
-print("\nFitting HMM for regime detection (4-Regime Setup) on TRAIN DATA ONLY...")
+# ---- HMM regime detection (fit on TRAIN only, predict on full dataset) ----
+print("\nFitting HMM on train data (4 regimes)...")
+train_exo = df_exo[(df_exo.date >= TRAIN_START) & (df_exo.date <= TRAIN_END)].reset_index(drop=True)
 hmm_model = MarketRegimeHMM(n_regimes=4)
-hmm_model.fit(train_df_exo)
+hmm_model.fit(train_exo)
 
-# --- NEW: Predict Future Regime ---
-print("Predicting regimes for the entire dataset...")
+print("Predicting regimes for full dataset...")
 regime_df = hmm_model.predict(df_exo)
-regime_df['future_regime'] = regime_df['regime'].apply(lambda x: hmm_model.predict_next_regime(x))
-# ----------------------------------
+regime_df['future_regime'] = regime_df['regime'].apply(hmm_model.predict_next_regime)
 
 plot_regimes(df, regime_df)
-# -------------------------------
 
+# ---- Train / test split ----
 train_df = df[(df.date >= TRAIN_START) & (df.date <= TRAIN_END)].reset_index(drop=True)
 test_df  = df[(df.date >= TEST_START)  & (df.date <= TEST_END)].reset_index(drop=True)
-train_regime_df = regime_df[(regime_df.date >= TRAIN_START) & (regime_df.date <= TRAIN_END)].reset_index(drop=True)
-test_regime_df  = regime_df[(regime_df.date >= TEST_START)  & (regime_df.date <= TEST_END)].reset_index(drop=True)
+train_regime = regime_df[
+    (regime_df.date >= TRAIN_START) & (regime_df.date <= TRAIN_END)
+].reset_index(drop=True)
+test_regime  = regime_df[
+    (regime_df.date >= TEST_START)  & (regime_df.date <= TEST_END)
+].reset_index(drop=True)
 
-print("="*50)
-print(f"DEBUG: Initializing StockPortfolioEnv")
-print(f"DEBUG: train_df shape: {train_df.shape}")
-print(f"DEBUG: test_df shape:  {test_df.shape}")
-print("="*50)
+print(f"Train: {train_df.shape}  Test: {test_df.shape}")
 
-env_train = StockPortfolioEnv(
-    df=train_df,
-    stock_dim=len(TICKER_LIST),
-    hmax=100,  # Required but not used in portfolio allocation
-    initial_amount=INITIAL_AMOUNT,
-    transaction_cost_pct=0.001,
-    reward_scaling=1000.0,
-    state_space=len(TICKER_LIST),
-    action_space=len(TICKER_LIST),
-    tech_indicator_list=["macd", "rsi", "cci", "adx"],
-    lookback=20,
-    day=0,
-    regime_df=train_regime_df # Pass regimes to env
+env_train = HardRegimePortfolioEnv(
+    train_df, len(TICKER_LIST), INITIAL_AMOUNT, ["macd","rsi","cci","adx"], train_regime
 )
-
-# Update observation space shape in env object manually due to augmentation
-env_train.observation_space = spaces.Box(
-    low=-np.inf, high=np.inf, 
-    shape=(env_train.lookback, env_train.state.shape[0], env_train.state.shape[1]), 
-    dtype=np.float32
-)
-
-env_test = StockPortfolioEnv(
-    df=test_df,
-    stock_dim=len(TICKER_LIST),
-    hmax=100,
-    initial_amount=INITIAL_AMOUNT,
-    transaction_cost_pct=0.001,
-    reward_scaling=1000.0,
-    state_space=len(TICKER_LIST),
-    action_space=len(TICKER_LIST),
-    tech_indicator_list=["macd", "rsi", "cci", "adx"],
-    lookback=20,
-    day=0,
-    regime_df=test_regime_df
-)
-
-env_test.observation_space = spaces.Box(
-    low=-np.inf, high=np.inf, 
-    shape=(env_test.lookback, env_test.state.shape[0], env_test.state.shape[1]), 
-    dtype=np.float32
+env_test  = HardRegimePortfolioEnv(
+    test_df,  len(TICKER_LIST), INITIAL_AMOUNT, ["macd","rsi","cci","adx"], test_regime
 )
 
 # ============================================================================
-# Actor-Critic Networks
+# Actor — 4 specialist heads, hard-routed by x[:, -1]
 # ============================================================================
 class Actor(nn.Module):
-    """Multi-Agent Actor: Switches between 3 regime-specialized heads"""
+    """
+    Hard-routing actor.
+    Reads the regime index from x[:, -1] (the single appended scalar),
+    then activates exactly the corresponding specialist head.
+    Shared feature extractor and log-std across all heads.
+    """
     def __init__(self, input_dim, num_assets, hidden=256):
         super().__init__()
-        # Share the feature extractor (lower layers)
         self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU()
+            nn.Linear(input_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden),   nn.ReLU(),
         )
-        
-        # Specialist heads for 4 regimes (Bull, Sideways Up, Sideways Down, Bear)
-        self.heads = nn.ModuleList([
-            nn.Linear(hidden, num_assets) for _ in range(4)
-        ])
+        self.heads   = nn.ModuleList([nn.Linear(hidden, num_assets) for _ in range(4)])
+        self.log_std = nn.Parameter(torch.zeros(num_assets))
 
     def forward(self, x):
-        # Extract regime from state (last row, first element - we filled it with regime index)
-        # Note: x shape is [batch, obs_dim]
-        # Our obs_dim mapping: state matrix flattened
-        # Let's be explicit: regime is stored in the last element of each flattened batch entry (rough approximation if flattened)
-        # Better: keep track of where the regime info is. 
-        # In our env, it's the last row of the matrix.
-        
-        # Selection logic (Multi-agent routing)
-        # Regime info is in the last row of the LAST state in the sequence
-        # x shape: [batch, window, features, assets] -> flattened to [batch, window*features*assets]
-        # In our case, features_per_day = features * assets
-        # The very last element of the flattened vector for each batch is the regime of the current day
-        regime_indices = x[:, -1].long() 
-        
-        features = self.feature_extractor(x)
-        
-        # Selection logic (Multi-agent routing)
-        # To support batching, we process each item according to its regime
-        out = torch.zeros(x.shape[0], self.heads[0].out_features, device=x.device)
+        regime_idx = x[:, -1].long()                  # shape [batch]
+        features   = self.feature_extractor(x)         # shape [batch, hidden]
+        raw = torch.zeros(x.shape[0], self.heads[0].out_features, device=x.device)
         for i in range(4):
-            mask = (regime_indices == i)
+            mask = (regime_idx == i)
             if mask.any():
-                out[mask] = self.heads[i](features[mask])
-        # Normalize across stocks to amplify relative differences
-        # (raw linear outputs are clustered too close for softplus to differentiate)
-        out_mean = out.mean(dim=-1, keepdim=True)
-        out_std = out.std(dim=-1, keepdim=True) + 1e-6
-        out_normalized = (out - out_mean) / out_std
-        out_normalized = torch.clamp(out_normalized, -3, 3)  # Prevent extreme values
-        alpha = torch.exp(out_normalized) + 0.1  # alpha range: ~0.15 to ~20.2
-        return alpha
+                raw[mask] = self.heads[i](features[mask])
+        mean = raw * 0.1
+        std  = torch.clamp(torch.exp(self.log_std), 1e-3, 1.0).unsqueeze(0).expand_as(mean)
+        return mean, std
 
 
 class Critic(nn.Module):
-    """Critic network estimates state value"""
     def __init__(self, input_dim, hidden=256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 1)
+            nn.Linear(input_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden),   nn.ReLU(),
+            nn.Linear(hidden, 1),
         )
 
     def forward(self, x):
         return self.net(x).squeeze(-1)
 
 # ============================================================================
-# A2C Training Loop (Simplex-Safe)
+# A2C Training — slide-by-1 rolling buffer (IDENTICAL to Baseline and Select_3)
 # ============================================================================
-def train_a2c(
-    env,
-    epochs=200,
-    gamma=0.99,
-    lr=1e-4,    # Slightly lower for Dirichlet stability
-    value_coef=0.5,
-    entropy_coef=0.001, # Low: with 38 stocks, entropy bonus pushes toward uniform if too high
-    batch_size=20
-):
-    obs_dim = np.prod(env.observation_space.shape)
+def train_a2c(env, epochs=200, gamma=0.99, lr=1e-4,
+              value_coef=0.5, entropy_coef=0.01, batch_size=20):
+    obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
-    actor = Actor(obs_dim, act_dim).to(DEVICE)
+    actor  = Actor(obs_dim, act_dim).to(DEVICE)
     critic = Critic(obs_dim).to(DEVICE)
-
-    optimizer = optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()),
-        lr=lr
+    opt    = optim.Adam(
+        list(actor.parameters()) + list(critic.parameters()), lr=lr
     )
-
-    rewards_history = []
+    history = []
 
     for ep in range(epochs):
         state, _ = env.reset()
         done = False
         ep_reward = 0.0
-
-        # Rollout buffer (Data storage)
-        states_buffer = []
-        weights_buffer = []
-        rewards_buffer = []
-        masks_buffer = []
+        s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
 
         while not done:
-            # Efficiently convert state to tensor
-            s_input = torch.from_numpy(state.flatten()).float().unsqueeze(0).to(DEVICE)
+            s_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-            # Actor & Critic (No grad for sampling)
             with torch.no_grad():
-                alpha = actor(s_input)
-                # Dirichlet sampling fallback (MPS doesn't support it yet)
-                dist = torch.distributions.Dirichlet(alpha.cpu())
-                weights = dist.sample().to(DEVICE)
-            
-            # Environment step
-            action = weights.cpu().numpy()[0]
-            next_state, reward, done, _, _ = env.step(action)
+                mean, std = actor(s_t)
+                w_raw = torch.distributions.Normal(
+                    mean.cpu(), std.cpu()
+                ).sample().to(DEVICE)
 
-            # Store in buffer
-            states_buffer.append(s_input)
-            weights_buffer.append(weights)
-            rewards_buffer.append(reward)
-            masks_buffer.append(1.0 - float(done))
+            next_state, reward, done, _, _ = env.step(w_raw.cpu().numpy()[0])
 
+            s_buf.append(s_t)
+            w_buf.append(w_raw)
+            r_buf.append(reward)
+            m_buf.append(1.0 - float(done))
+            mean_buf.append(mean)
             state = next_state
             ep_reward += reward
 
-            # Update if buffer is full (Rolling Update)
-            if len(rewards_buffer) >= batch_size:
-                # Prepare trajectory tensors (Minimize concat)
-                b_states = torch.cat(states_buffer) # [batch, flattened_features]
-                b_weights = torch.cat(weights_buffer) # [batch, num_assets]
-                
-                # Convert list to tensor on device once
-                b_rewards = torch.tensor(rewards_buffer, dtype=torch.float32, device=DEVICE)
-                b_masks = torch.tensor(masks_buffer, dtype=torch.float32, device=DEVICE)
+            if len(r_buf) >= batch_size:
+                bs = torch.cat(s_buf)
+                bw = torch.cat(w_buf)
+                br = torch.tensor(r_buf, dtype=torch.float32, device=DEVICE)
+                bm = torch.tensor(m_buf, dtype=torch.float32, device=DEVICE)
 
-                # Re-evaluate graph for the entire window
-                alpha_batch = actor(b_states)
-                values_tensor = critic(b_states).squeeze()
-                
-                dist_batch = torch.distributions.Dirichlet(alpha_batch)
-                log_probs_tensor = dist_batch.log_prob(b_weights)
-                entropies_tensor = dist_batch.entropy()
+                mean_b, std_b = actor(bs)
+                vals          = critic(bs).squeeze()
+                dist_b        = torch.distributions.Normal(mean_b, std_b)
+                lp            = dist_b.log_prob(bw).sum(-1)
+                ent           = dist_b.entropy().sum(-1)
 
-                # Calculate returns (bootstrapped)
                 with torch.no_grad():
-                    s_next = torch.from_numpy(next_state.flatten()).float().unsqueeze(0).to(DEVICE)
-                    next_value = critic(s_next) if not done else torch.zeros(1, 1, device=DEVICE)
-                
-                returns = []
-                R = next_value.squeeze()
-                # Use reversed loop efficiently
-                for r, m in zip(reversed(rewards_buffer), reversed(masks_buffer)):
+                    ns_t = torch.tensor(
+                        next_state, dtype=torch.float32
+                    ).unsqueeze(0).to(DEVICE)
+                    nv = (critic(ns_t).squeeze()
+                          if not done
+                          else torch.zeros(1, device=DEVICE))
+
+                rets, R = [], nv
+                for r, m in zip(reversed(r_buf), reversed(m_buf)):
                     R = r + gamma * R * m
-                    returns.insert(0, R)
-                
-                returns = torch.stack(returns).squeeze()
-                
-                # Advantage (Normalize for stability)
-                advantages = returns - values_tensor
-                
-                # Losses
-                actor_loss = -(log_probs_tensor * advantages.detach()).mean()
-                critic_loss = advantages.pow(2).mean()
-                loss = actor_loss + value_coef * critic_loss - entropy_coef * entropies_tensor.mean()
+                    rets.insert(0, R)
+                rets = torch.stack(rets).squeeze()
+                adv  = rets - vals
 
-                optimizer.zero_grad(set_to_none=True) # Slightly faster than zero_grad()
+                loss = (
+                    -(lp * adv.detach()).mean()
+                    + value_coef  * adv.pow(2).mean()
+                    - entropy_coef * ent.mean()
+                    + 0.5 * (mean_b ** 2).mean()   # L2 penalty on raw logits
+                )
+
+                opt.zero_grad(set_to_none=True)
                 loss.backward()
-                # Clip gradients to prevent exploding gradients (stability)
-                torch.nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), 0.5)
-                optimizer.step()
+                torch.nn.utils.clip_grad_norm_(
+                    list(actor.parameters()) + list(critic.parameters()), 0.5
+                )
+                opt.step()
 
-                # SLIDE BY 1: Remove the oldest entry
-                states_buffer.pop(0)
-                weights_buffer.pop(0)
-                rewards_buffer.pop(0)
-                masks_buffer.pop(0)
-            
+                # slide buffer by 1
+                for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
+                    buf.pop(0)
+
             if done:
-                # Clear buffer at end of episode
-                states_buffer, weights_buffer, rewards_buffer, masks_buffer = [], [], [], []
+                s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
 
-        rewards_history.append(ep_reward)
-
+        history.append(ep_reward)
         if ep % 10 == 0:
-            print(f"Episode {ep:04d} | Reward: {ep_reward:.6f} | Value: {R.item():.4f}")
+            print(f"[Hard] Ep {ep:04d} | Reward: {ep_reward:.4f}")
 
-    return actor, critic, rewards_history
-
-def plot_training_progress(rewards, save_path='results/finrlmain_training.png'):
-    """Plot training progress"""
-    import os
-    import matplotlib.pyplot as plt
-    os.makedirs('results', exist_ok=True)
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(rewards, alpha=0.6, label='Episode Reward')
-    
-    # Add moving average
-    window = 20
-    if len(rewards) >= window:
-        moving_avg = pd.Series(rewards).rolling(window=window).mean()
-        plt.plot(moving_avg, linewidth=2, label=f'{window}-Episode Moving Average')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.title('A2C Training Progress (FinRL Main)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Training progress plot saved to {save_path}")
-    
-def plot_portfolio_allocation(df_weights, save_path='results/allocation_history.png'):
-    """Plot portfolio allocation over time using a stacked area chart"""
-    import os
-    import matplotlib.pyplot as plt
-    os.makedirs('results', exist_ok=True)
-    
-    plt.figure(figsize=(12, 7))
-    # Filter tickers that had at least some allocation (to keep legend clean)
-    ticker_cols = df_weights.columns
-    # Sort by average allocation to make the plot look better
-    avg_alloc = df_weights.mean().sort_values(ascending=False)
-    sorted_tickers = avg_alloc.index.tolist()
-    
-    plt.stackplot(df_weights.index, 
-                  [df_weights[tic] for tic in sorted_tickers], 
-                  labels=sorted_tickers, 
-                  alpha=0.8)
-    
-    plt.title('Portfolio Allocation History (Weight Evolution)', fontsize=14)
-    plt.xlabel('Date / Step', fontsize=12)
-    plt.ylabel('Weight', fontsize=12)
-    # Put legend outside
-    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, ncol=2)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Allocation history plot saved to {save_path}")
+    return actor, critic, history
 
 # ============================================================================
-# Train Agent
+# Plotting helpers
+# ============================================================================
+def plot_training_progress(rewards, path='results/hard_training.png'):
+    import matplotlib.pyplot as plt
+    os.makedirs('results', exist_ok=True)
+    plt.figure(figsize=(10, 5))
+    plt.plot(rewards, alpha=0.5, label='Episode Reward')
+    if len(rewards) >= 20:
+        plt.plot(pd.Series(rewards).rolling(20).mean(), lw=2, label='20-ep MA')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title('A2C Training — Hard Regime Routing')
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved {path}")
+
+
+def plot_wealth_over_time(env, initial, path='results/hard_wealth.png'):
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    os.makedirs('results', exist_ok=True)
+    dates = env.date_memory[:len(env.asset_memory)]
+    vals  = np.array(env.asset_memory)
+    norm  = vals / initial
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    axes[0].plot(dates, vals, color='steelblue', lw=1.5)
+    axes[0].fill_between(dates, initial, vals,
+                         where=(vals >= initial), alpha=0.25, color='green', label='Gain')
+    axes[0].fill_between(dates, initial, vals,
+                         where=(vals <  initial), alpha=0.25, color='red',   label='Loss')
+    axes[0].axhline(initial, color='grey', ls='--', lw=0.8)
+    axes[0].yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f'${x:,.0f}')
+    )
+    axes[0].set_ylabel('Portfolio Value (USD)')
+    axes[0].set_title('Hard Routing Wealth (Out-of-Sample)')
+    axes[0].legend()
+    axes[0].grid(alpha=0.3)
+
+    axes[1].plot(dates, norm, color='darkorange', lw=1.5)
+    axes[1].axhline(1.0, color='grey', ls='--', lw=0.8)
+    axes[1].set_ylabel('Normalised Wealth')
+    axes[1].set_xlabel('Date')
+    axes[1].grid(alpha=0.3)
+
+    plt.xticks(rotation=30, ha='right')
+    plt.tight_layout()
+    plt.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved {path}")
+
+# ============================================================================
+# Train
 # ============================================================================
 actor, critic, rewards = train_a2c(env_train)
 plot_training_progress(rewards)
@@ -653,49 +463,34 @@ plot_training_progress(rewards)
 # ============================================================================
 # Evaluation
 # ============================================================================
-print("\n[Evaluating trained agent on Test Set (Out-of-Sample)...]")
+print("\n[Evaluating Hard-Routing on Test Set (Out-of-Sample)...]")
 state, _ = env_test.reset()
 done = False
-final_weights = None
 all_weights = []
+final_weights = None
 
-while not done:
-    s = torch.from_numpy(state.flatten()).float().unsqueeze(0).to(DEVICE)
-    with torch.no_grad():
-        # Use Dirichlet Actor logic (concentration parameters)
-        alpha = actor(s)
-        # Temperature-sharpened allocation (Dirichlet mean is too uniform with many stocks)
-        log_alpha = torch.log(alpha)
-        weights = torch.softmax(log_alpha / 0.5, dim=-1).cpu().numpy()[0]  # temp=0.5 (alphas now naturally varied)
-             
-        # Apply constraints for evaluation
-        weights = enforce_portfolio_constraints(weights, max_weight=0.30)
-        final_weights = weights # Keep track of last weights
-        all_weights.append(weights)
-        
-    state, _, done, _, _ = env_test.step(weights)
+actor.eval()
+with torch.no_grad():
+    while not done:
+        s_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        mean, _ = actor(s_t)
+        weights_raw = mean.cpu().numpy()[0]
+        final_weights = enforce_portfolio_constraints(weights_raw)
+        all_weights.append(final_weights)
+        state, _, done, _, _ = env_test.step(weights_raw)
 
-# Plot allocation history
-df_weights = pd.DataFrame(all_weights, columns=TICKER_LIST)
-# If dates are available in env, use them
-if hasattr(env_test, 'date_memory') and len(env_test.date_memory) > len(all_weights):
-    df_weights.index = env_test.date_memory[1:len(all_weights)+1]
-plot_portfolio_allocation(df_weights)
+plot_wealth_over_time(env_test, INITIAL_AMOUNT)
 
 print("=" * 60)
-print("OUT-OF-SAMPLE RESULTS")
+print("HARD ROUTING OUT-OF-SAMPLE RESULTS")
 print("=" * 60)
-print(f"Final Portfolio Value: ${env_test.portfolio_value:,.2f}")
-print(f"Total Return: {(env_test.portfolio_value / INITIAL_AMOUNT - 1) * 100:.2f}%")
-
-# Calculate Sharpe
-returns_df = pd.DataFrame(env_test.portfolio_return_memory)
-if returns_df.std().iloc[0] != 0:
-    sharpe = (252**0.5) * returns_df.mean().iloc[0] / returns_df.std().iloc[0]
-    print(f"Sharpe Ratio: {sharpe:.4f}")
-
-print("\nFinal Portfolio Allocation:")
+print(f"Final Portfolio Value : ${env_test.portfolio_value:,.2f}")
+print(f"Total Return          : {(env_test.portfolio_value / INITIAL_AMOUNT - 1) * 100:.2f}%")
+ret_df = pd.DataFrame(env_test.portfolio_return_memory, columns=['ret'])
+sharpe = (252 ** 0.5) * ret_df['ret'].mean() / (ret_df['ret'].std() + 1e-8)
+print(f"Sharpe Ratio          : {sharpe:.4f}")
 if final_weights is not None:
-    for i, ticker in enumerate(TICKER_LIST):
-        print(f"  {ticker}: {final_weights[i]*100:.2f}%")
+    print("\nFinal Portfolio Allocation:")
+    for i, t in enumerate(TICKER_LIST):
+        print(f"  {t:5s}: {final_weights[i] * 100:.2f}%")
 print("=" * 60)

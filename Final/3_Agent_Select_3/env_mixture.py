@@ -3,28 +3,34 @@ import pandas as pd
 import gym
 from gym import spaces
 
-def enforce_portfolio_constraints(weights, max_weight=0.30):
-    weights = np.array(weights).copy()
-    weights = np.clip(weights, 0, 1)
-    weights = weights / (weights.sum() + 1e-8)
+MIN_WEIGHT = -0.05   # Allow up to 5% short
+MAX_WEIGHT =  0.20   # Cap any single position at 20%
+
+def enforce_portfolio_constraints(weights, min_weight=MIN_WEIGHT, max_weight=MAX_WEIGHT):
+    """
+    Exact Euclidean projection onto the bounded simplex.
+    Finds weights that minimize ||w - raw||^2 subject to sum(w)=1 and min <= w <= max.
+    Uses continuous bisection search for strict constraint satisfaction.
+    """
+    weights = np.array(weights, dtype=np.float32)
     
-    for _ in range(5):
-        over = weights > max_weight
-        if not over.any():
-            break
-        excess = weights[over] - max_weight
-        total_excess = excess.sum()
-        weights[over] = max_weight
+    # Bisection search bounds for the Lagrange multiplier
+    mu_min = np.min(weights) - max_weight - 1.0
+    mu_max = np.max(weights) - min_weight + 1.0
+    
+    for _ in range(50):
+        mu = (mu_min + mu_max) / 2.0
+        clipped = np.clip(weights - mu, min_weight, max_weight)
+        current_sum = np.sum(clipped)
         
-        under = weights < max_weight
-        if under.any():
-            current_mass = weights[under].sum()
-            if current_mass > 0:
-                weights[under] += total_excess * (weights[under] / current_mass)
-            else:
-                weights[under] += total_excess / under.sum()
-                
-    return weights / (weights.sum() + 1e-8)
+        if abs(current_sum - 1.0) < 1e-6:
+            break
+        elif current_sum > 1.0:
+            mu_min = mu  # Need to decrease sum -> increase mu
+        else:
+            mu_max = mu  # Need to increase sum -> decrease mu
+            
+    return np.clip(weights - mu, min_weight, max_weight).astype(np.float32)
 
 class MixturePortfolioEnv(gym.Env):
     """
@@ -48,7 +54,7 @@ class MixturePortfolioEnv(gym.Env):
         self.day = 0
         
         # Spaces
-        self.action_space = spaces.Box(low=0, high=1, shape=(self.stock_dim,))
+        self.action_space = spaces.Box(low=MIN_WEIGHT, high=MAX_WEIGHT, shape=(self.stock_dim,))
         
         # Determine obs_dim dynamically
         test_state = self._get_state()
@@ -80,15 +86,24 @@ class MixturePortfolioEnv(gym.Env):
         self.portfolio_value = self.initial_amount
         self.asset_memory = [self.initial_amount]
         self.portfolio_return_memory = [0]
+        self.actions_memory = []
         self.state = self._get_state()
         return self.state, {}
 
     def step(self, actions):
         # Constraints to match 3_Agent_Select_1
         try:
-            weights = enforce_portfolio_constraints(actions, max_weight=0.30)
+            weights = enforce_portfolio_constraints(actions)
         except:
             weights = actions / (np.sum(actions) + 1e-8)
+            
+        if len(self.actions_memory) > 0:
+            previous_weights = self.actions_memory[-1]
+            turnover = np.sum(np.abs(weights - previous_weights))
+        else:
+            turnover = 0.0
+            
+        self.actions_memory.append(weights)
         
         last_day_data = self.df[self.df.date == self.unique_dates[self.day]]
         
@@ -107,8 +122,18 @@ class MixturePortfolioEnv(gym.Env):
         # Calculate Return
         portfolio_return = sum(((new_day_data.close.values / last_day_data.close.values) - 1) * weights)
         
-        # REFINED REWARD: match 3_Agent_Select_1 (just return * scaling)
-        reward = portfolio_return * self.reward_scaling
+        # MEAN-VARIANCE REWARD: Penalise volatility to improve Sharpe Ratio
+        risk_aversion = 0.5  # lambda (reduced to focus on return over vol)
+        portfolio_return_penalised = portfolio_return - 0.5 * risk_aversion * port_variance
+        
+        # TURNOVER PENALTY
+        turnover_penalty = 0.0001 * turnover  # 0.01% transaction cost penalty (lowered to encourage learning)
+        
+        # CONCENTRATION PENALTY (Reduced to 0.005 to match daily return magnitude)
+        concentration_penalty = 0.005 * np.sum(weights ** 2)
+        
+        # REFINED REWARD: match 3_Agent_Select_1
+        reward = (portfolio_return_penalised - turnover_penalty - concentration_penalty) * self.reward_scaling
         
         # Update Portfolio
         self.portfolio_value *= (1 + portfolio_return)

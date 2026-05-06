@@ -13,7 +13,7 @@ from finrl.meta.preprocessor.preprocessors import FeatureEngineer
 
 from hmm_probabilistic import ProbabilisticHMM, plot_regime_probs
 from agents_moe import ActorMoE, Critic
-from env_mixture import MixturePortfolioEnv
+from env_mixture import MixturePortfolioEnv, enforce_portfolio_constraints
 
 # --- Config ---
 # Restoring full TICKER_LIST from baseline
@@ -174,74 +174,101 @@ env_test = MixturePortfolioEnv(
 def train(env):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
-    
+
     actor = ActorMoE(obs_dim, act_dim).to(DEVICE)
     critic = Critic(obs_dim).to(DEVICE)
-    optimizer = optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=1e-4)
-    
-    epochs = 200 # Fixed to 200 as requested
-    gamma = 0.99
+    optimizer = optim.Adam(
+        list(actor.parameters()) + list(critic.parameters()), lr=1e-4
+    )
+
+    epochs     = 200
+    gamma      = 0.99
     batch_size = 20
-    
+    value_coef    = 0.5
+    entropy_coef  = 0.01
+    l2_coef       = 0.5   # aligned with Baseline and Select_1
+
     rewards_history = []
-    
+
     print(f"Starting MoE Training on {DEVICE} for {epochs} epochs...")
     for ep in range(epochs):
         state, _ = env.reset()
         done = False
-        ep_reward = 0
-        
-        log_probs, values, rewards, masks, entropies = [], [], [], [], []
-        
+        ep_reward = 0.0
+        # slide-by-1 rolling buffers — IDENTICAL structure to Baseline and Select_1
+        s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
+
         while not done:
-            s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            alpha = actor(s_tensor)
-            value = critic(s_tensor)
-            
-            dist = torch.distributions.Dirichlet(alpha)
-            weights = dist.sample()
-            log_prob = dist.log_prob(weights)
-            
-            action = weights.detach().cpu().numpy()[0]
-            next_state, reward, done, _, _ = env.step(action)
-            
-            log_probs.append(log_prob)
-            values.append(value)
-            rewards.append(torch.tensor([reward], dtype=torch.float32, device=DEVICE))
-            masks.append(torch.tensor([1 - float(done)], dtype=torch.float32, device=DEVICE))
-            entropies.append(dist.entropy())
-            
+            s_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
+            with torch.no_grad():
+                mean, std = actor(s_t)
+                w_raw = torch.distributions.Normal(
+                    mean.cpu(), std.cpu()
+                ).sample().to(DEVICE)
+
+            action_np = w_raw.cpu().numpy()[0]
+            next_state, reward, done, _, _ = env.step(action_np)
+
+            s_buf.append(s_t)
+            w_buf.append(w_raw)
+            r_buf.append(reward)
+            m_buf.append(1.0 - float(done))
+            mean_buf.append(mean)
             state = next_state
             ep_reward += reward
-            
-            if len(rewards) >= batch_size or done:
+
+            if len(r_buf) >= batch_size:
+                bs = torch.cat(s_buf)
+                bw = torch.cat(w_buf)
+                br = torch.tensor(r_buf, dtype=torch.float32, device=DEVICE)
+                bm = torch.tensor(m_buf, dtype=torch.float32, device=DEVICE)
+
+                mean_b, std_b = actor(bs)
+                vals          = critic(bs).squeeze()
+                dist_b        = torch.distributions.Normal(mean_b, std_b)
+                lp            = dist_b.log_prob(bw).sum(-1)
+                ent           = dist_b.entropy().sum(-1)
+
                 with torch.no_grad():
-                    ns_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-                    next_value = critic(ns_tensor) if not done else torch.zeros(1, device=DEVICE)
-                
-                returns = []
-                R = next_value
-                for r, m in zip(reversed(rewards), reversed(masks)):
+                    ns_t = torch.tensor(
+                        next_state, dtype=torch.float32
+                    ).unsqueeze(0).to(DEVICE)
+                    nv = (critic(ns_t).squeeze()
+                          if not done
+                          else torch.zeros(1, device=DEVICE))
+
+                rets, R = [], nv
+                for r, m in zip(reversed(r_buf), reversed(m_buf)):
                     R = r + gamma * R * m
-                    returns.insert(0, R)
-                
-                returns = torch.cat(returns)
-                vals = torch.cat(values)
-                advantages = returns - vals
-                
-                actor_loss = -(torch.cat(log_probs) * advantages.detach()).mean()
-                critic_loss = advantages.pow(2).mean()
-                loss = actor_loss + 0.5 * critic_loss - 0.001 * torch.cat(entropies).mean()
-                
-                optimizer.zero_grad()
+                    rets.insert(0, R)
+                rets = torch.stack(rets).squeeze()
+                adv  = rets - vals
+
+                loss = (
+                    -(lp * adv.detach()).mean()
+                    + value_coef   * adv.pow(2).mean()
+                    - entropy_coef * ent.mean()
+                    + l2_coef      * (mean_b ** 2).mean()
+                )
+
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(actor.parameters()) + list(critic.parameters()), 0.5
+                )
                 optimizer.step()
-                
-                log_probs, values, rewards, masks, entropies = [], [], [], [], []
-                
+
+                # slide buffer by 1
+                for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
+                    buf.pop(0)
+
+            if done:
+                s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
+
         rewards_history.append(ep_reward)
-        if ep % 20 == 0:
-            print(f"Episode {ep:03d} | Reward: {ep_reward:.2f} | PortVal: ${env.portfolio_value:,.2f}")
+        if ep % 10 == 0:
+            print(f"[MoE] Ep {ep:04d} | Reward: {ep_reward:.4f} | PortVal: ${env.portfolio_value:,.2f}")
 
     return actor, critic, rewards_history
 
@@ -308,24 +335,66 @@ if __name__ == "__main__":
     with torch.no_grad():
         while not done:
             s_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            alpha = actor(s_tensor)
-            # Temperature-sharpened allocation (Dirichlet mean is too uniform with many stocks)
-            log_alpha = torch.log(alpha)
-            weights = torch.softmax(log_alpha / 0.5, dim=-1).detach().cpu().numpy()[0]  # temp=0.5
-            
-            from env_mixture import enforce_portfolio_constraints
-            weights = enforce_portfolio_constraints(weights, max_weight=0.30)
-            
-            final_weights = weights
-            all_weights.append(weights)
-            state, _, done, _, _ = env_test.step(weights)
+            mean, _ = actor(s_tensor)   # greedy mean at eval time
+            weights_raw = mean.detach().cpu().numpy()[0]
+            final_weights = enforce_portfolio_constraints(weights_raw)
+            all_weights.append(final_weights)
+            state, _, done, _, _ = env_test.step(weights_raw)
             
     # Plot allocation history
     df_weights = pd.DataFrame(all_weights, columns=TICKERS)
     if hasattr(env_test, 'unique_dates') and len(env_test.unique_dates) > len(all_weights):
         df_weights.index = env_test.unique_dates[1:len(all_weights)+1]
     plot_portfolio_allocation(df_weights)
-            
+
+    # ---- NEW: Wealth over time plot ----
+    def plot_wealth_over_time(asset_memory, date_memory, initial_amount, save_path='results/wealth_over_time.png'):
+        """
+        Plot portfolio wealth over the test period and save as an image.
+        Two panels: absolute portfolio value and normalised growth of $1.
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+        os.makedirs('results', exist_ok=True)
+
+        dates = date_memory[:len(asset_memory)] if date_memory else list(range(len(asset_memory)))
+        values = np.array(asset_memory)
+        normalised = values / initial_amount
+
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+        # Top panel: absolute portfolio value
+        axes[0].plot(dates, values, color='steelblue', linewidth=1.5)
+        axes[0].fill_between(dates, initial_amount, values,
+                             where=(values >= initial_amount),
+                             alpha=0.25, color='green', label='Gain')
+        axes[0].fill_between(dates, initial_amount, values,
+                             where=(values < initial_amount),
+                             alpha=0.25, color='red', label='Loss')
+        axes[0].axhline(initial_amount, color='grey', linestyle='--', linewidth=0.8, label='Initial')
+        axes[0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+        axes[0].set_ylabel('Portfolio Value (USD)', fontsize=11)
+        axes[0].set_title('Portfolio Wealth over Time — MoE (Out-of-Sample Test)', fontsize=13)
+        axes[0].legend(fontsize=9)
+        axes[0].grid(True, alpha=0.3)
+
+        # Bottom panel: normalised (growth of $1)
+        axes[1].plot(dates, normalised, color='darkorange', linewidth=1.5)
+        axes[1].axhline(1.0, color='grey', linestyle='--', linewidth=0.8)
+        axes[1].set_ylabel('Normalised Wealth (Growth of $1)', fontsize=11)
+        axes[1].set_xlabel('Date', fontsize=11)
+        axes[1].grid(True, alpha=0.3)
+
+        plt.xticks(rotation=30, ha='right')
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Wealth over time plot saved to {save_path}")
+
+    # Build a date_memory list from unique_dates (index 0 is reset day, returns start from day 1)
+    date_memory = list(env_test.unique_dates[:len(env_test.asset_memory)])
+    plot_wealth_over_time(env_test.asset_memory, date_memory, 1_000_000)
+
     print("="*60)
     print("FINAL MOE OUT-OF-SAMPLE PERFORMANCE")
     print("="*60)
