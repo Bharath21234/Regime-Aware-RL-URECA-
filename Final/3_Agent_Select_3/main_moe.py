@@ -181,7 +181,7 @@ def train(env):
         list(actor.parameters()) + list(critic.parameters()), lr=1e-4
     )
 
-    epochs     = 200
+    epochs     = 1000
     gamma      = 0.99
     batch_size = 20
     value_coef    = 0.5

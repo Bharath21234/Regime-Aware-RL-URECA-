@@ -211,8 +211,8 @@ if __name__ == '__main__':
         description='Multi-seed experiment runner for regime-aware RL variants.'
     )
     parser.add_argument(
-        '--seeds', type=int, default=20,
-        help='Number of random seeds (runs seed 0 … seeds-1). Default: 20.'
+        '--seeds', type=int, default=4,
+        help='Number of random seeds (runs seed 0 … seeds-1). Default: 4.'
     )
     parser.add_argument(
         '--variant', choices=['hard', 'moe', 'both'], default='both',

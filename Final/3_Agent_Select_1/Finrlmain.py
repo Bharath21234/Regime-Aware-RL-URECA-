@@ -308,7 +308,7 @@ class Critic(nn.Module):
 # ============================================================================
 # A2C Training — slide-by-1 rolling buffer (IDENTICAL to Baseline and Select_3)
 # ============================================================================
-def train_a2c(env, epochs=200, gamma=0.99, lr=1e-4,
+def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
               value_coef=0.5, entropy_coef=0.01, batch_size=20):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
