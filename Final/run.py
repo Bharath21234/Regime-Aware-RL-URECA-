@@ -79,8 +79,13 @@ def run_variant(variant: str, n_seeds: int) -> list:
         out_root    = os.path.join(HERE, 'results', 'moe')
         sys.path.insert(0, variant_dir)
         from main_moe import run_experiment           # noqa: E402
+    elif variant == 'router':
+        variant_dir = os.path.join(HERE, '3_Agent_Select_4')
+        out_root    = os.path.join(HERE, 'results', 'router')
+        sys.path.insert(0, variant_dir)
+        from main_router import run_experiment        # noqa: E402
     else:
-        raise ValueError(f"Unknown variant '{variant}'. Choose 'hard' or 'moe'.")
+        raise ValueError(f"Unknown variant '{variant}'. Choose 'hard', 'moe', or 'router'.")
 
     os.makedirs(out_root, exist_ok=True)
     summary_rows = []
@@ -167,8 +172,8 @@ def print_aggregate(variant: str, rows: list) -> dict:
     return stats
 
 
-def print_comparison(variant_rows: dict):
-    """Welch's t-test (hard vs moe) for each metric. Prints p-values.
+def print_comparison(variant_rows: dict, title: str = "Hard Routing vs Soft MoE"):
+    """Welch's t-test between two variants. Prints p-values.
 
     variant_rows: {'hard': [row_dict, ...], 'moe': [row_dict, ...]}
     """
@@ -182,10 +187,10 @@ def print_comparison(variant_rows: dict):
 
     w = 70
     print(f"\n{'='*w}")
-    print("  CROSS-VARIANT COMPARISON: Hard Routing vs Soft MoE")
+    print(f"  CROSS-VARIANT COMPARISON: {title}")
     print(f"  (Welch's two-sided t-test, H0: means are equal)")
     print(f"{'='*w}")
-    print(f"  {'Metric':<25s}  {'Hard mean':>10s}  {'MoE mean':>9s}  {'Δ (MoE-Hard)':>13s}  {'p-value':>9s}  {'sig':>4s}")
+    print(f"  {'Metric':<25s}  {'Hard mean':>10s}  {'Alt mean':>9s}  {'Δ (Alt-Hard)':>13s}  {'p-value':>9s}  {'sig':>4s}")
     print(f"  {'-'*25}  {'-'*10}  {'-'*9}  {'-'*13}  {'-'*9}  {'-'*4}")
 
     for k in REPORT_KEYS:
@@ -215,12 +220,17 @@ if __name__ == '__main__':
         help='Number of random seeds (runs seed 0 … seeds-1). Default: 4.'
     )
     parser.add_argument(
-        '--variant', choices=['hard', 'moe', 'both'], default='both',
-        help="Which variant to run: 'hard', 'moe', or 'both'. Default: both."
+        '--variant', choices=['hard', 'moe', 'router', 'both', 'all'], default='both',
+        help="Which variant to run: 'hard', 'moe', 'router', 'both' (hard+moe), or 'all'. Default: both."
     )
     args = parser.parse_args()
 
-    variants = ['hard', 'moe'] if args.variant == 'both' else [args.variant]
+    if args.variant == 'both':
+        variants = ['hard', 'moe']
+    elif args.variant == 'all':
+        variants = ['hard', 'moe', 'router']
+    else:
+        variants = [args.variant]
 
     # ── Run all variants ──────────────────────────────────────────────────
     collected = {}          # variant → {'rows': [...], 'stats': {...}}
@@ -232,8 +242,21 @@ if __name__ == '__main__':
         agg_path = os.path.join(HERE, 'results', v, 'aggregate_stats.json')
         save_json(stats, agg_path)
 
-    # ── Cross-variant significance test (only when both variants ran) ─────
-    if len(collected) == 2:
-        print_comparison({v: d['rows'] for v, d in collected.items()})
+    # ── Cross-variant significance tests ─────────────────────────────────
+    if 'hard' in collected and 'moe' in collected:
+        print_comparison(
+            {'hard': collected['hard']['rows'], 'moe': collected['moe']['rows']},
+            title="Hard Routing vs Soft MoE",
+        )
+    if 'hard' in collected and 'router' in collected:
+        print_comparison(
+            {'hard': collected['hard']['rows'], 'moe': collected['router']['rows']},
+            title="Hard Routing vs Learned Router",
+        )
+    if 'moe' in collected and 'router' in collected:
+        print_comparison(
+            {'hard': collected['moe']['rows'], 'moe': collected['router']['rows']},
+            title="Soft MoE vs Learned Router",
+        )
 
     print(f"\nDone. Results in {os.path.join(HERE, 'results')}/")
