@@ -68,9 +68,10 @@ class MixturePortfolioEnv(gym.Env):
         covs = data["cov_list"].iloc[0]
         if isinstance(covs, list):
             covs = np.array(covs)
-            
-        techs = np.array([data[t].values for t in self.tech_indicators])
-        
+        covs = np.nan_to_num(covs)
+
+        techs = np.nan_to_num(np.array([data[t].values for t in self.tech_indicators]))
+
         # Baseline state
         state = np.vstack([covs, techs]).astype(np.float32).flatten()
         

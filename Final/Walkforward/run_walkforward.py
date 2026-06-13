@@ -295,7 +295,7 @@ def plot_window_cumret(rows: list, window_label: str, save_path: str):
                 color=palette.get(r["method"], "grey"),
                 lw=1.2, alpha=0.6 if r["method"] in
                   ("Baseline (no gate)", "Hard Routing", "Soft MoE (ours)", "LSTM-Context")
-                else 1.6)
+                else 1.0)
     ax.axhline(0, color="black", lw=0.6, ls="--")
     ax.set_xlabel("Step"); ax.set_ylabel("Cumulative return (%)")
     ax.set_title(f"Cumulative Return — Window {window_label}",
@@ -400,45 +400,57 @@ if __name__ == "__main__":
 
     all_rows = []
     for win_tuple in WALK_FORWARD_WINDOWS[:args.windows]:
-        print(f"\n{'#'*70}")
-        print(f"  WINDOW {win_tuple[0]}   train {win_tuple[1]}…{win_tuple[2]}   "
-              f"test {win_tuple[3]}…{win_tuple[4]}")
-        print(f"{'#'*70}")
-        win = split_window(win_tuple)
-        print(f"     train_df={win['train_df'].shape}   test_df={win['test_df'].shape}   "
-              f"n_assets={win['n_assets']}")
+        label       = win_tuple[0]
+        window_file = os.path.join(args.out_dir, f"window_{label}_rows.json")
 
-        rows = evaluate_window(win, n_seeds=args.seeds, epochs=args.epochs,
-                                verbose=args.verbose)
+        if os.path.exists(window_file):
+            print(f"\n[Walkforward] Window {label}: cached results found, skipping training.")
+            with open(window_file) as f:
+                rows = json.load(f)
+        else:
+            print(f"\n{'#'*70}")
+            print(f"  WINDOW {win_tuple[0]}   train {win_tuple[1]}…{win_tuple[2]}   "
+                  f"test {win_tuple[3]}…{win_tuple[4]}")
+            print(f"{'#'*70}")
+            win = split_window(win_tuple)
+            print(f"     train_df={win['train_df'].shape}   test_df={win['test_df'].shape}   "
+                  f"n_assets={win['n_assets']}")
+
+            t_win = time.time()
+            rows = evaluate_window(win, n_seeds=args.seeds, epochs=args.epochs,
+                                    verbose=args.verbose)
+            print(f"     window {label} done in {time.time() - t_win:.1f}s", flush=True)
+
+            # Checkpoint this window immediately so a walltime kill doesn't
+            # lose completed windows.
+            _save_json(rows, window_file)
+
+            plot_window_cumret(
+                rows, win["label"],
+                save_path=os.path.join(args.out_dir, f"cumulative_returns_{win['label']}.png"),
+            )
+
         all_rows.extend(rows)
-        # Per-window cumulative-return plot
-        plot_window_cumret(
-            rows, win["label"],
-            save_path=os.path.join(args.out_dir, f"cumulative_returns_{win['label']}.png"),
-        )
 
-    # ── Save per-run rows (drop heavy asset_memory for slim version too) ─
-    _save_json(all_rows, os.path.join(args.out_dir, "per_run_metrics.json"))
+        # ── Re-aggregate after every window so a partial run still leaves
+        #    a usable results table / p-value matrix on disk ────────────
+        _save_json(all_rows, os.path.join(args.out_dir, "per_run_metrics.json"))
 
-    # ── Per-window summary (seeds averaged) ──────────────────────────────
-    pw_df = per_window_summary(all_rows)
-    pw_df.to_csv(os.path.join(args.out_dir, "per_window_summary.csv"), index=False)
-    _save_json(pw_df.to_dict(orient="records"),
-                os.path.join(args.out_dir, "per_window_summary.json"))
+        pw_df = per_window_summary(all_rows)
+        pw_df.to_csv(os.path.join(args.out_dir, "per_window_summary.csv"), index=False)
+        _save_json(pw_df.to_dict(orient="records"),
+                    os.path.join(args.out_dir, "per_window_summary.json"))
 
-    # ── Aggregate table ──────────────────────────────────────────────────
-    agg_df = aggregate_table(pw_df)
-    agg_df.to_csv(os.path.join(args.out_dir, "aggregate_table.csv"), index=False)
-    _save_json(agg_df.to_dict(orient="records"),
-                os.path.join(args.out_dir, "aggregate_table.json"))
-    write_results_table(agg_df, os.path.join(args.out_dir, "results_table.txt"))
+        agg_df = aggregate_table(pw_df)
+        agg_df.to_csv(os.path.join(args.out_dir, "aggregate_table.csv"), index=False)
+        _save_json(agg_df.to_dict(orient="records"),
+                    os.path.join(args.out_dir, "aggregate_table.json"))
+        write_results_table(agg_df, os.path.join(args.out_dir, "results_table.txt"))
 
-    # ── Pairwise Wilcoxon ────────────────────────────────────────────────
-    pmat = wilcoxon_pvalues(pw_df)
-    pmat.to_csv(os.path.join(args.out_dir, "pvalue_matrix.csv"))
-    write_pvalue_table(pmat, os.path.join(args.out_dir, "pvalue_matrix.txt"))
+        pmat = wilcoxon_pvalues(pw_df)
+        pmat.to_csv(os.path.join(args.out_dir, "pvalue_matrix.csv"))
+        write_pvalue_table(pmat, os.path.join(args.out_dir, "pvalue_matrix.txt"))
 
-    # ── Box plot ─────────────────────────────────────────────────────────
-    plot_sharpe_boxplot(pw_df, os.path.join(args.out_dir, "sharpe_boxplot.png"))
+        plot_sharpe_boxplot(pw_df, os.path.join(args.out_dir, "sharpe_boxplot.png"))
 
     print(f"\nDone.  All outputs in ./{args.out_dir}/")

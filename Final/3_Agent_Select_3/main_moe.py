@@ -178,15 +178,15 @@ def train(env):
     actor = ActorMoE(obs_dim, act_dim).to(DEVICE)
     critic = Critic(obs_dim).to(DEVICE)
     optimizer = optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()), lr=1e-4
+        list(actor.parameters()) + list(critic.parameters()), lr=3e-5
     )
 
-    epochs     = 1000
+    epochs     = 700
     gamma      = 0.99
     batch_size = 20
     value_coef    = 0.5
     entropy_coef  = 0.01
-    l2_coef       = 0.5   # aligned with Baseline and Select_1
+    l2_coef       = 0.01
 
     rewards_history = []
 
@@ -244,6 +244,7 @@ def train(env):
                     rets.insert(0, R)
                 rets = torch.stack(rets).squeeze()
                 adv  = rets - vals
+                adv  = (adv - adv.mean()) / (adv.std() + 1e-8)
 
                 loss = (
                     -(lp * adv.detach()).mean()

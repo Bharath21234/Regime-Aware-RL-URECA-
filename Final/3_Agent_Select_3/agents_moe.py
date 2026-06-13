@@ -13,7 +13,7 @@ class ActorMoE(nn.Module):
     def __init__(self, input_dim, num_assets, hidden=256):
         super().__init__()
         self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim, hidden),
+            nn.Linear(input_dim - 4, hidden),  # -4: regime probs excluded from extractor
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU()
@@ -32,7 +32,7 @@ class ActorMoE(nn.Module):
         mean is tanh-scaled to land inside [MIN_WEIGHT, MAX_WEIGHT].
         """
         regime_probs = x[:, -4:]  # [batch, 4]
-        features = self.feature_extractor(x)  # [batch, hidden]
+        features = self.feature_extractor(x[:, :-4])  # [batch, hidden] — exclude regime probs
 
         # Blend expert logits via soft regime gating
         expert_outputs = torch.stack(
