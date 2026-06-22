@@ -171,7 +171,7 @@ env_test = MixturePortfolioEnv(
 # ============================================================================
 # Training (A2C Core)
 # ============================================================================
-def train(env):
+def train(env, epochs=700):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -181,7 +181,6 @@ def train(env):
         list(actor.parameters()) + list(critic.parameters()), lr=3e-5
     )
 
-    epochs     = 700
     gamma      = 0.99
     batch_size = 20
     value_coef    = 0.5
@@ -479,9 +478,14 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
 # ============================================================================
 # run_experiment — callable by multi-seed runner or standalone
 # ============================================================================
-def run_experiment(seed: int = 0, out_dir: str = "results/moe") -> dict:
+def run_experiment(seed: int = 0, out_dir: str = "results/moe",
+                    reward_mode: str = 'mv', dsr_eta: float = 0.01,
+                    epochs: int = 700) -> dict:
     """
     One full train + evaluate cycle for a given random seed.
+
+    reward_mode: 'mv' (default) or 'dsr' (Differential Sharpe Ratio). Applied to
+    both env_train and env_test (module-level globals built at import time).
 
     Returns a dict with scalar performance metrics, 'seed', and 'rewards' list.
     Per-seed plots are written to out_dir/seed_{seed}_*.png.
@@ -490,8 +494,13 @@ def run_experiment(seed: int = 0, out_dir: str = "results/moe") -> dict:
     np.random.seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
+    env_train.reward_mode = reward_mode
+    env_train.dsr_eta = dsr_eta
+    env_test.reward_mode = reward_mode
+    env_test.dsr_eta = dsr_eta
+
     # ── Train ─────────────────────────────────────────────────────────────
-    actor, critic, rewards = train(env_train)
+    actor, critic, rewards = train(env_train, epochs=epochs)
     plot_training_progress(rewards, save_path=f"{out_dir}/seed_{seed}_training.png")
 
     # ── Greedy evaluation ─────────────────────────────────────────────────

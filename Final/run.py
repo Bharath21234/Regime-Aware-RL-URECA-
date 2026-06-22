@@ -58,12 +58,24 @@ def save_json(data: dict, path: str):
 # Per-variant runner
 # ---------------------------------------------------------------------------
 
-def run_variant(variant: str, n_seeds: int) -> list:
+def run_variant(variant: str, n_seeds: int, reward_mode: str = 'mv', dsr_eta: float = 0.01,
+                 epochs: int | None = None, calib_tag: str = '') -> tuple:
     """
     Import the variant module (triggers data download + HMM fit once),
-    then loop over seeds calling run_experiment(seed, out_dir).
+    then loop over seeds calling run_experiment(seed, out_dir, reward_mode, dsr_eta, epochs).
 
-    Returns a list of per-seed metric dicts (without the 'rewards' key).
+    reward_mode: 'mv' (default mean-variance reward) or 'dsr' (Differential Sharpe
+    Ratio reward — directly optimizes the online Sharpe derivative instead of
+    one-step return/variance). dsr_eta only used when reward_mode='dsr'.
+
+    epochs: override the variant's default epoch count (Hard/Router=1000, MoE=700).
+    Leave as None to use each variant's own default (e.g. for full runs); set to a
+    small number (e.g. 50) for a quick calibration/smoke-test run.
+
+    calib_tag: if non-empty, appended to the output dir name (e.g. 'calib') so a
+    quick calibration run never collides with or overwrites real results.
+
+    Returns (list of per-seed metric dicts without the 'rewards' key, out_root used).
     """
     print(f"\n{'#'*70}")
     print(f"  Loading {variant.upper()} module  (data download happens here)...")
@@ -87,19 +99,26 @@ def run_variant(variant: str, n_seeds: int) -> list:
     else:
         raise ValueError(f"Unknown variant '{variant}'. Choose 'hard', 'moe', or 'router'.")
 
+    if reward_mode == 'dsr':
+        out_root = out_root + '_dsr'
+    if calib_tag:
+        out_root = out_root + f'_{calib_tag}'
+
     os.makedirs(out_root, exist_ok=True)
     summary_rows = []
 
     for seed in range(n_seeds):
         print(f"\n{'='*60}")
-        print(f"  {variant.upper()} | seed {seed} / {n_seeds - 1}")
+        print(f"  {variant.upper()} | seed {seed} / {n_seeds - 1} | reward_mode={reward_mode}")
         print(f"{'='*60}")
 
         # Seed both frameworks before calling run_experiment
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        metrics = run_experiment(seed=seed, out_dir=out_root)
+        extra_kwargs = {} if epochs is None else {'epochs': epochs}
+        metrics = run_experiment(seed=seed, out_dir=out_root, reward_mode=reward_mode,
+                                  dsr_eta=dsr_eta, **extra_kwargs)
 
         # Separate heavy rewards list so scalar JSON stays small
         rewards  = metrics.pop('rewards', [])
@@ -115,7 +134,7 @@ def run_variant(variant: str, n_seeds: int) -> list:
 
     save_json({'runs': summary_rows}, os.path.join(out_root, 'summary.json'))
     print(f"\n  All {n_seeds} seeds complete for {variant}.")
-    return summary_rows
+    return summary_rows, out_root
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +242,24 @@ if __name__ == '__main__':
         '--variant', choices=['hard', 'moe', 'router', 'both', 'all'], default='both',
         help="Which variant to run: 'hard', 'moe', 'router', 'both' (hard+moe), or 'all'. Default: both."
     )
+    parser.add_argument(
+        '--reward_mode', choices=['mv', 'dsr'], default='mv',
+        help="Reward function: 'mv' (mean-variance utility, default) or 'dsr' "
+             "(Differential Sharpe Ratio, Moody & Saffell 1998). Default: mv."
+    )
+    parser.add_argument(
+        '--dsr_eta', type=float, default=0.01,
+        help='EMA decay rate for DSR running moments (only used if --reward_mode dsr). Default: 0.01.'
+    )
+    parser.add_argument(
+        '--epochs', type=int, default=None,
+        help='Override each variant default epoch count (Hard/Router=1000, MoE=700). '
+             'Leave unset for full runs; set small (e.g. 50) for a quick calibration run.'
+    )
+    parser.add_argument(
+        '--calib', action='store_true',
+        help="Tag output dir with '_calib' so a quick test run never collides with real results."
+    )
     args = parser.parse_args()
 
     if args.variant == 'both':
@@ -235,11 +272,12 @@ if __name__ == '__main__':
     # ── Run all variants ──────────────────────────────────────────────────
     collected = {}          # variant → {'rows': [...], 'stats': {...}}
     for v in variants:
-        rows              = run_variant(v, args.seeds)
+        rows, out_root    = run_variant(v, args.seeds, reward_mode=args.reward_mode, dsr_eta=args.dsr_eta,
+                                         epochs=args.epochs, calib_tag='calib' if args.calib else '')
         stats             = print_aggregate(v, rows)
         collected[v]      = {'rows': rows, 'stats': stats}
-        # Save aggregate stats JSON next to the per-seed files
-        agg_path = os.path.join(HERE, 'results', v, 'aggregate_stats.json')
+        # Save aggregate stats JSON next to the per-seed files (same dir run_variant wrote to)
+        agg_path = os.path.join(out_root, 'aggregate_stats.json')
         save_json(stats, agg_path)
 
     # ── Cross-variant significance tests ─────────────────────────────────

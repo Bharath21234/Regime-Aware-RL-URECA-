@@ -37,9 +37,9 @@ class MixturePortfolioEnv(gym.Env):
     Portfolio Environment with Action-Based Risk-Adjusted Rewards 
     and HMM Probability State Augmentation.
     """
-    def __init__(self, df, stock_dim, initial_amount, tech_indicator_list, 
+    def __init__(self, df, stock_dim, initial_amount, tech_indicator_list,
                  regime_probs_df, transaction_cost_pct=0.001,
-                 reward_scaling=1e3, lookback=20):
+                 reward_scaling=1e3, lookback=20, reward_mode='mv', dsr_eta=0.01):
         super().__init__()
         self.df = df
         self.stock_dim = stock_dim
@@ -49,6 +49,8 @@ class MixturePortfolioEnv(gym.Env):
         self.transaction_cost_pct = transaction_cost_pct
         self.reward_scaling = reward_scaling
         self.lookback = lookback
+        self.reward_mode = reward_mode
+        self.dsr_eta = dsr_eta
         
         self.unique_dates = sorted(df.date.unique())
         self.day = 0
@@ -88,6 +90,8 @@ class MixturePortfolioEnv(gym.Env):
         self.asset_memory = [self.initial_amount]
         self.portfolio_return_memory = [0]
         self.actions_memory = []
+        self._dsr_A = 0.0
+        self._dsr_B = 0.0
         self.state = self._get_state()
         return self.state, {}
 
@@ -123,18 +127,29 @@ class MixturePortfolioEnv(gym.Env):
         # Calculate Return
         portfolio_return = sum(((new_day_data.close.values / last_day_data.close.values) - 1) * weights)
         
-        # MEAN-VARIANCE REWARD: Penalise volatility to improve Sharpe Ratio
-        risk_aversion = 0.5  # lambda (reduced to focus on return over vol)
-        portfolio_return_penalised = portfolio_return - 0.5 * risk_aversion * port_variance
-        
         # TURNOVER PENALTY
         turnover_penalty = 0.0001 * turnover  # 0.01% transaction cost penalty (lowered to encourage learning)
-        
+
         # CONCENTRATION PENALTY (Reduced to 0.005 to match daily return magnitude)
         concentration_penalty = 0.005 * np.sum(weights ** 2)
-        
-        # REFINED REWARD: match 3_Agent_Select_1
-        reward = (portfolio_return_penalised - turnover_penalty - concentration_penalty) * self.reward_scaling
+
+        if self.reward_mode == 'dsr':
+            # Differential Sharpe Ratio (Moody & Saffell 1998) in place of the
+            # one-step mean-variance utility term.
+            delta_A = portfolio_return - self._dsr_A
+            delta_B = portfolio_return ** 2 - self._dsr_B
+            denom = (self._dsr_B - self._dsr_A ** 2) ** 1.5
+            dsr = (self._dsr_B * delta_A - 0.5 * self._dsr_A * delta_B) / denom if denom > 1e-6 else 0.0
+            dsr = float(np.clip(dsr, -10.0, 10.0))  # bound the derivative to prevent reward blow-up when variance is near-zero
+            self._dsr_A += self.dsr_eta * delta_A
+            self._dsr_B += self.dsr_eta * delta_B
+            reward = (dsr - turnover_penalty - concentration_penalty) * self.reward_scaling
+        else:
+            # MEAN-VARIANCE REWARD: Penalise volatility to improve Sharpe Ratio
+            risk_aversion = 0.5  # lambda (reduced to focus on return over vol)
+            portfolio_return_penalised = portfolio_return - 0.5 * risk_aversion * port_variance
+            # REFINED REWARD: match 3_Agent_Select_1
+            reward = (portfolio_return_penalised - turnover_penalty - concentration_penalty) * self.reward_scaling
         
         # Update Portfolio
         self.portfolio_value *= (1 + portfolio_return)

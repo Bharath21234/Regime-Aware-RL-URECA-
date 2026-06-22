@@ -70,13 +70,16 @@ class _BasePortfolioEnv(gym.Env):
 
     def __init__(self, df: pd.DataFrame, regime_df: pd.DataFrame | None,
                  stock_dim: int, initial_amount: float = 1_000_000,
-                 reward_scaling: float = 1000.0):
+                 reward_scaling: float = 1000.0,
+                 reward_mode: str = 'mv', dsr_eta: float = 0.01):
         super().__init__()
         self.df              = df
         self.regime_df       = regime_df
         self.stock_dim       = stock_dim
         self.initial_amount  = initial_amount
         self.reward_scaling  = reward_scaling
+        self.reward_mode     = reward_mode
+        self.dsr_eta         = dsr_eta
         self.unique_dates    = sorted(df.date.unique())
         self.day             = 0
 
@@ -119,6 +122,8 @@ class _BasePortfolioEnv(gym.Env):
         self.portfolio_return_memory = [0.0]
         self.date_memory             = [self.unique_dates[0]]
         self.actions_memory          = []
+        self._dsr_A                  = 0.0
+        self._dsr_B                  = 0.0
         self.state                   = self._build_state()
         return self.state, {}
 
@@ -140,7 +145,19 @@ class _BasePortfolioEnv(gym.Env):
         var = float(np.dot(weights, np.dot(covs, weights)))
         hhi = float(np.sum(weights ** 2))
 
-        reward = (ret - 0.25 * var - 0.0001 * turnover - 0.005 * hhi) * self.reward_scaling
+        if self.reward_mode == 'dsr':
+            # Differential Sharpe Ratio (Moody & Saffell 1998) in place of the
+            # one-step mean-variance utility term.
+            delta_A = ret - self._dsr_A
+            delta_B = ret ** 2 - self._dsr_B
+            denom   = (self._dsr_B - self._dsr_A ** 2) ** 1.5
+            dsr     = (self._dsr_B * delta_A - 0.5 * self._dsr_A * delta_B) / denom if denom > 1e-6 else 0.0
+            dsr     = float(np.clip(dsr, -10.0, 10.0))  # bound the derivative to prevent reward blow-up when variance is near-zero
+            self._dsr_A += self.dsr_eta * delta_A
+            self._dsr_B += self.dsr_eta * delta_B
+            reward = (dsr - 0.0001 * turnover - 0.005 * hhi) * self.reward_scaling
+        else:
+            reward = (ret - 0.25 * var - 0.0001 * turnover - 0.005 * hhi) * self.reward_scaling
 
         self.portfolio_value *= (1 + ret)
         self.asset_memory.append(self.portfolio_value)

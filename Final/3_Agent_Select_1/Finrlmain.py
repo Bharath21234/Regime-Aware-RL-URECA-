@@ -65,10 +65,14 @@ class HardRegimePortfolioEnv(gym.Env):
     Reward = (risk-adj return − turnover − concentration) × reward_scaling
     """
     def __init__(self, df, stock_dim, initial_amount, tech_indicator_list,
-                 regime_df, reward_scaling=1000.0):
+                 regime_df, reward_scaling=1000.0, reward_mode='mv', dsr_eta=0.01):
         """
         regime_df : DataFrame with columns ['date', 'future_regime']
                     where future_regime is the HMM-predicted next-step regime (int 0-3).
+        reward_mode : 'mv' (default, mean-variance utility) or 'dsr' (Differential
+                      Sharpe Ratio, Moody & Saffell 1998 — directly optimizes the
+                      online Sharpe-ratio derivative instead of one-step return/variance).
+        dsr_eta : EMA decay rate for the DSR running moments (only used if reward_mode='dsr').
         """
         super().__init__()
         self.df = df
@@ -77,6 +81,8 @@ class HardRegimePortfolioEnv(gym.Env):
         self.tech_indicators = tech_indicator_list
         self.regime_df = regime_df
         self.reward_scaling = reward_scaling
+        self.reward_mode = reward_mode
+        self.dsr_eta = dsr_eta
 
         self.unique_dates = sorted(df.date.unique())
         self.day = 0
@@ -111,6 +117,8 @@ class HardRegimePortfolioEnv(gym.Env):
         self.portfolio_return_memory = [0]
         self.date_memory = [self.unique_dates[0]]
         self.actions_memory = []
+        self._dsr_A = 0.0
+        self._dsr_B = 0.0
         self.state = self._get_state()
         return self.state, {}
 
@@ -131,13 +139,30 @@ class HardRegimePortfolioEnv(gym.Env):
         ret = np.sum(((new_data.close.values / last_data.close.values) - 1) * weights)
         var = float(np.dot(weights, np.dot(covs, weights)))
 
-        # Mean-variance utility  − turnover cost  − HHI concentration penalty
-        reward = (
-            ret
-            - 0.5 * 0.5 * var       # risk aversion λ=0.5, factor 0.5 from MV utility
-            - 0.0001 * turnover
-            - 0.005 * np.sum(weights ** 2)
-        ) * self.reward_scaling
+        if self.reward_mode == 'dsr':
+            # Differential Sharpe Ratio (Moody & Saffell 1998): online derivative
+            # of the Sharpe ratio w.r.t. the new return, using EMA moments A (mean),
+            # B (second moment) of past returns. Replaces the one-step MV utility term.
+            delta_A = ret - self._dsr_A
+            delta_B = ret ** 2 - self._dsr_B
+            denom = (self._dsr_B - self._dsr_A ** 2) ** 1.5
+            dsr = (self._dsr_B * delta_A - 0.5 * self._dsr_A * delta_B) / denom if denom > 1e-6 else 0.0
+            dsr = float(np.clip(dsr, -10.0, 10.0))  # bound the derivative to prevent reward blow-up when variance is near-zero
+            self._dsr_A += self.dsr_eta * delta_A
+            self._dsr_B += self.dsr_eta * delta_B
+            reward = (
+                dsr
+                - 0.0001 * turnover
+                - 0.005 * np.sum(weights ** 2)
+            ) * self.reward_scaling
+        else:
+            # Mean-variance utility  − turnover cost  − HHI concentration penalty
+            reward = (
+                ret
+                - 0.5 * 0.5 * var       # risk aversion λ=0.5, factor 0.5 from MV utility
+                - 0.0001 * turnover
+                - 0.005 * np.sum(weights ** 2)
+            ) * self.reward_scaling
 
         self.portfolio_value *= (1 + ret)
         self.portfolio_return_memory.append(ret)
@@ -612,9 +637,14 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
 # ============================================================================
 # run_experiment — callable by multi-seed runner or standalone
 # ============================================================================
-def run_experiment(seed: int = 0, out_dir: str = "results/hard") -> dict:
+def run_experiment(seed: int = 0, out_dir: str = "results/hard",
+                    reward_mode: str = 'mv', dsr_eta: float = 0.01,
+                    epochs: int = 1000) -> dict:
     """
     One full train + evaluate cycle for a given random seed.
+
+    reward_mode: 'mv' (default) or 'dsr' (Differential Sharpe Ratio). Applied to
+    both env_train and env_test (module-level globals built at import time).
 
     Returns a dict with scalar performance metrics, 'seed', and 'rewards' list.
     Per-seed plots are written to out_dir/seed_{seed}_*.png.
@@ -623,8 +653,13 @@ def run_experiment(seed: int = 0, out_dir: str = "results/hard") -> dict:
     np.random.seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
+    env_train.reward_mode = reward_mode
+    env_train.dsr_eta = dsr_eta
+    env_test.reward_mode = reward_mode
+    env_test.dsr_eta = dsr_eta
+
     # ── Train ─────────────────────────────────────────────────────────────
-    actor, critic, rewards = train_a2c(env_train)
+    actor, critic, rewards = train_a2c(env_train, epochs=epochs)
     plot_training_progress(rewards, path=f"{out_dir}/seed_{seed}_training.png")
 
     # ── Greedy evaluation ─────────────────────────────────────────────────

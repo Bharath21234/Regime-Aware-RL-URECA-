@@ -130,7 +130,7 @@ env_test = MixturePortfolioEnv(
 )
 
 # ── A2C training loop ─────────────────────────────────────────────────────────
-def train(env):
+def train(env, epochs=1000):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -140,7 +140,6 @@ def train(env):
         list(actor.parameters()) + list(critic.parameters()), lr=3e-5
     )
 
-    epochs        = 1000
     gamma         = 0.99
     batch_size    = 20
     value_coef    = 0.5
@@ -344,12 +343,19 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
 
 
 # ── run_experiment — called by multi-seed runner ──────────────────────────────
-def run_experiment(seed: int = 0, out_dir: str = "results/router") -> dict:
+def run_experiment(seed: int = 0, out_dir: str = "results/router",
+                    reward_mode: str = 'mv', dsr_eta: float = 0.01,
+                    epochs: int = 1000) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
-    actor, critic, rewards = train(env_train)
+    env_train.reward_mode = reward_mode
+    env_train.dsr_eta = dsr_eta
+    env_test.reward_mode = reward_mode
+    env_test.dsr_eta = dsr_eta
+
+    actor, critic, rewards = train(env_train, epochs=epochs)
     plot_training_progress(rewards, save_path=f"{out_dir}/seed_{seed}_training.png")
 
     print("\n[Evaluating Learned-Router agent on Test Set (Out-of-Sample)...]")

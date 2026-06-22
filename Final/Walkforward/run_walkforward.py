@@ -86,7 +86,8 @@ def compute_metrics(asset_memory, portfolio_return_memory,
 
 def _run_rl_variant(window: dict, variant: str, seed: int,
                      epochs: int, seq_len: int = 20,
-                     verbose: bool = False) -> dict:
+                     verbose: bool = False,
+                     reward_mode: str = 'mv', dsr_eta: float = 0.01) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -97,18 +98,20 @@ def _run_rl_variant(window: dict, variant: str, seed: int,
     test_reg   = window["test_regime"]
 
     if variant == "baseline":
-        train_env = FlatPortfolioEnv(train_df, None, n_assets)
-        test_env  = FlatPortfolioEnv(test_df,  None, n_assets)
+        train_env = FlatPortfolioEnv(train_df, None, n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
+        test_env  = FlatPortfolioEnv(test_df,  None, n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
         base_dim  = None
     elif variant == "hard":
-        train_env = HardRegimePortfolioEnv(train_df, train_reg, n_assets)
-        test_env  = HardRegimePortfolioEnv(test_df,  test_reg,  n_assets)
+        train_env = HardRegimePortfolioEnv(train_df, train_reg, n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
+        test_env  = HardRegimePortfolioEnv(test_df,  test_reg,  n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
         base_dim  = None
     elif variant == "soft":
-        train_env = MixturePortfolioEnv(train_df, train_reg, n_assets)
-        test_env  = MixturePortfolioEnv(test_df,  test_reg,  n_assets)
+        train_env = MixturePortfolioEnv(train_df, train_reg, n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
+        test_env  = MixturePortfolioEnv(test_df,  test_reg,  n_assets, reward_mode=reward_mode, dsr_eta=dsr_eta)
         base_dim  = None
     elif variant == "lstm":
+        # LSTM-Context uses a separate env class with its own reward function —
+        # not covered by the mv/dsr reward_mode toggle (out of scope for this ablation).
         train_env = LSTMContextEnv(train_df, n_assets, seq_len=seq_len)
         test_env  = LSTMContextEnv(test_df,  n_assets, seq_len=seq_len)
         base_dim  = train_env._state_base(train_env.unique_dates[0]).shape[0]
@@ -138,7 +141,8 @@ RL_VARIANTS = [
 
 
 def evaluate_window(window: dict, n_seeds: int, epochs: int,
-                     verbose: bool = False) -> list:
+                     verbose: bool = False,
+                     reward_mode: str = 'mv', dsr_eta: float = 0.01) -> list:
     """Returns list of per-run dicts (one row per (method, seed))."""
     rows = []
     label = window["label"]
@@ -160,7 +164,8 @@ def evaluate_window(window: dict, n_seeds: int, epochs: int,
             if verbose:
                 print(f"      [RL]  {variant_name:<22s} seed={seed}")
             t0     = time.time()
-            traj   = _run_rl_variant(window, variant_key, seed, epochs, verbose=False)
+            traj   = _run_rl_variant(window, variant_key, seed, epochs, verbose=False,
+                                      reward_mode=reward_mode, dsr_eta=dsr_eta)
             metrics = compute_metrics(traj["asset_memory"], traj["portfolio_return_memory"])
             rows.append({
                 "window":  label, "method": variant_name, "seed": seed, **metrics,
@@ -392,10 +397,17 @@ if __name__ == "__main__":
                           help="Run only the first N windows (debug/smoke-test).")
     parser.add_argument("--out_dir", type=str, default="results")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--reward_mode", choices=["mv", "dsr"], default="mv",
+                         help="Reward function for baseline/hard/soft variants: 'mv' "
+                              "(mean-variance utility, default) or 'dsr' (Differential "
+                              "Sharpe Ratio). LSTM variant is unaffected (separate reward).")
+    parser.add_argument("--dsr_eta", type=float, default=0.01,
+                         help="EMA decay rate for DSR running moments (only used if --reward_mode dsr).")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f"\n[Walkforward]   device={DEVICE}   seeds={args.seeds}   epochs={args.epochs}")
+    print(f"\n[Walkforward]   device={DEVICE}   seeds={args.seeds}   epochs={args.epochs}   "
+          f"reward_mode={args.reward_mode}")
     print(f"               running {args.windows}/{len(WALK_FORWARD_WINDOWS)} windows")
 
     all_rows = []
@@ -418,7 +430,8 @@ if __name__ == "__main__":
 
             t_win = time.time()
             rows = evaluate_window(win, n_seeds=args.seeds, epochs=args.epochs,
-                                    verbose=args.verbose)
+                                    verbose=args.verbose,
+                                    reward_mode=args.reward_mode, dsr_eta=args.dsr_eta)
             print(f"     window {label} done in {time.time() - t_win:.1f}s", flush=True)
 
             # Checkpoint this window immediately so a walltime kill doesn't
