@@ -147,7 +147,7 @@ class HardRegimePortfolioEnv(gym.Env):
             delta_B = ret ** 2 - self._dsr_B
             denom = (self._dsr_B - self._dsr_A ** 2) ** 1.5
             dsr = (self._dsr_B * delta_A - 0.5 * self._dsr_A * delta_B) / denom if denom > 1e-6 else 0.0
-            dsr = float(np.clip(dsr, -10.0, 10.0))  # bound the derivative to prevent reward blow-up when variance is near-zero
+            dsr = float(np.clip(dsr, -0.5, 0.5))  # bound the derivative to match mv reward's natural per-step scale
             self._dsr_A += self.dsr_eta * delta_A
             self._dsr_B += self.dsr_eta * delta_B
             reward = (
