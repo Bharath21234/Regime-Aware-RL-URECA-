@@ -334,7 +334,7 @@ class Critic(nn.Module):
 # A2C Training — slide-by-1 rolling buffer (IDENTICAL to Baseline and Select_3)
 # ============================================================================
 def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
-              value_coef=0.5, entropy_coef=0.01, batch_size=20):
+              value_coef=0.5, entropy_coef=0.01, batch_size=20, gae_lambda=0.95):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -342,6 +342,10 @@ def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
     critic = Critic(obs_dim).to(DEVICE)
     opt    = optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=lr
+    )
+    # Linear LR decay to 10% of the initial rate over the full training run.
+    scheduler = optim.lr_scheduler.LinearLR(
+        opt, start_factor=1.0, end_factor=0.1, total_iters=epochs
     )
     history = []
 
@@ -390,16 +394,25 @@ def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
                           if not done
                           else torch.zeros(1, device=DEVICE))
 
-                rets, R = [], nv
-                for r, m in zip(reversed(r_buf), reversed(m_buf)):
-                    R = r + gamma * R * m
-                    rets.insert(0, R)
-                rets = torch.stack(rets).squeeze()
-                adv  = rets - vals
+                # ---- Generalized Advantage Estimation (GAE-lambda), truncated
+                # to this sliding window; bootstrapped with nv at the boundary ----
+                with torch.no_grad():
+                    vals_d    = vals.detach()
+                    next_vals = torch.cat([vals_d[1:], nv.reshape(1)])
+                    deltas    = br + gamma * next_vals * bm - vals_d
+                    adv_raw   = torch.zeros_like(deltas)
+                    gae       = torch.zeros((), device=DEVICE)
+                    for i in reversed(range(len(deltas))):
+                        gae = deltas[i] + gamma * gae_lambda * bm[i] * gae
+                        adv_raw[i] = gae
+                    value_target = adv_raw + vals_d
+
+                value_loss = (value_target - vals).pow(2).mean()
+                adv_norm   = (adv_raw - adv_raw.mean()) / (adv_raw.std() + 1e-8)
 
                 loss = (
-                    -(lp * adv.detach()).mean()
-                    + value_coef  * adv.pow(2).mean()
+                    -(lp * adv_norm).mean()
+                    + value_coef   * value_loss
                     - entropy_coef * ent.mean()
                     + 0.5 * (mean_b ** 2).mean()   # L2 penalty on raw logits
                 )
@@ -418,6 +431,7 @@ def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
             if done:
                 s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
 
+        scheduler.step()
         history.append(ep_reward)
         if ep % 10 == 0:
             print(f"[Hard] Ep {ep:04d} | Reward: {ep_reward:.4f}")
