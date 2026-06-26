@@ -1,0 +1,24 @@
+#!/bin/bash
+#PBS -N dsr_gae_calib
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o dsr_gae_calib.out
+#PBS -e dsr_gae_calib.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Same calibration as run_calib.pbs (Hard, 1 seed, 50 epochs) but DSR reward
+# instead of mv, with the new GAE/advantage-normalization/LR-annealing
+# training mechanics (same code, since those fixes apply regardless of
+# reward_mode). Writes to results/hard_dsr_calib/ -- this OVERWRITES the
+# earlier pre-GAE DSR calibration output in that same folder; that's fine,
+# calibration runs are disposable, but note it before relying on old data there.
+python -u run.py --variant hard --seeds 1 --epochs 50 --reward_mode dsr --calib
