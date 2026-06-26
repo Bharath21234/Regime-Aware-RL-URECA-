@@ -35,7 +35,7 @@ def train_a2c(env, variant: str, num_assets: int,
               seq_len: int = 20,
               epochs: int = 200, gamma: float = 0.99, lr: float = 1e-4,
               value_coef: float = 0.5, entropy_coef: float = 0.01,
-              batch_size: int = 20, l2_coef: float = 0.5,
+              batch_size: int = 20, l2_coef: float = 0.5, gae_lambda: float = 0.95,
               device: str | None = None,
               verbose: bool = False) -> tuple:
 
@@ -45,6 +45,10 @@ def train_a2c(env, variant: str, num_assets: int,
                           base_dim=base_dim, seq_len=seq_len)
     critic  = Critic(obs_dim).to(device)
     opt     = optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=lr)
+    # Linear LR decay to 10% of the initial rate over the full training run.
+    scheduler = optim.lr_scheduler.LinearLR(
+        opt, start_factor=1.0, end_factor=0.1, total_iters=epochs
+    )
     history = []
 
     for ep in range(epochs):
@@ -71,6 +75,8 @@ def train_a2c(env, variant: str, num_assets: int,
             if len(r_buf) >= batch_size:
                 bs = torch.cat(s_buf)
                 bw = torch.cat(w_buf)
+                br = torch.tensor(r_buf, dtype=torch.float32, device=device)
+                bm = torch.tensor(m_buf, dtype=torch.float32, device=device)
 
                 mean_b, std_b = actor(bs)
                 vals          = critic(bs).squeeze()
@@ -82,16 +88,25 @@ def train_a2c(env, variant: str, num_assets: int,
                     ns_t = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(device)
                     nv   = critic(ns_t).squeeze() if not done else torch.zeros(1, device=device)
 
-                rets, R = [], nv
-                for r, m in zip(reversed(r_buf), reversed(m_buf)):
-                    R = r + gamma * R * m
-                    rets.insert(0, R)
-                rets_t = torch.stack(rets).squeeze()
-                adv    = rets_t - vals
+                # ---- Generalized Advantage Estimation (GAE-lambda), truncated
+                # to this sliding window; bootstrapped with nv at the boundary ----
+                with torch.no_grad():
+                    vals_d    = vals.detach()
+                    next_vals = torch.cat([vals_d[1:], nv.reshape(1)])
+                    deltas    = br + gamma * next_vals * bm - vals_d
+                    adv_raw   = torch.zeros_like(deltas)
+                    gae       = torch.zeros((), device=device)
+                    for i in reversed(range(len(deltas))):
+                        gae = deltas[i] + gamma * gae_lambda * bm[i] * gae
+                        adv_raw[i] = gae
+                    value_target = adv_raw + vals_d
+
+                value_loss = (value_target - vals).pow(2).mean()
+                adv_norm   = (adv_raw - adv_raw.mean()) / (adv_raw.std() + 1e-8)
 
                 loss = (
-                    -(lp * adv.detach()).mean()
-                    + value_coef   * adv.pow(2).mean()
+                    -(lp * adv_norm).mean()
+                    + value_coef   * value_loss
                     - entropy_coef * ent.mean()
                     + l2_coef      * (mean_b ** 2).mean()
                 )
@@ -109,6 +124,7 @@ def train_a2c(env, variant: str, num_assets: int,
             if done:
                 s_buf, w_buf, r_buf, m_buf = [], [], [], []
 
+        scheduler.step()
         history.append(ep_reward)
         if verbose and ep % 20 == 0:
             print(f"      [{variant} ep {ep:03d}]  reward={ep_reward:.3f}  "
