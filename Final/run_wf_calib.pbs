@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -N wf_gae_calib
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o wf_gae_calib.out
+#PBS -e wf_gae_calib.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/Walkforward
+
+# Calibration: 1 window only (W1, the smallest train set), 1 seed, 30 epochs
+# (vs the real 300), isolated output dir so it can't collide with or
+# overwrite the existing 68h walkforward results.
+python -u run_walkforward.py --windows 1 --seeds 1 --epochs 30 --reward_mode mv --out_dir results_gae_calib --verbose
