@@ -15,4 +15,4 @@ source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
 
 cd /home/bharath007/Regime-Aware-RL-URECA-/Final
 
-python -u run.py --variant hard --seeds 1 --epochs 50 --reward_mode dsr --calib
+python -u run.py --variant hard --seeds 1 --epochs 50 --reward_mode mv --calib
