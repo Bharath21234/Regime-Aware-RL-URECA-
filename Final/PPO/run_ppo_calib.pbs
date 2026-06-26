@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N ppo_calib
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o ppo_calib.out
+#PBS -e ppo_calib.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/PPO
+
+# Calibration: Hard Routing only, 1 seed, 20 epochs (each "epoch" = one full
+# episode collection + 10 minibatch-SGD passes over it, per the clipped PPO
+# objective). Isolated to results/hard_ppo_calib/. Same calibrate-before-
+# committing pattern used for every other change in this project.
+python -u run_ppo.py --variant hard --seeds 1 --epochs 20 --reward_mode mv --calib
