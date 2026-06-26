@@ -171,7 +171,7 @@ env_test = MixturePortfolioEnv(
 # ============================================================================
 # Training (A2C Core)
 # ============================================================================
-def train(env, epochs=700):
+def train(env, epochs=1000):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -491,7 +491,7 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
 # ============================================================================
 def run_experiment(seed: int = 0, out_dir: str = "results/moe",
                     reward_mode: str = 'mv', dsr_eta: float = 0.01,
-                    epochs: int = 700) -> dict:
+                    epochs: int = 1000) -> dict:
     """
     One full train + evaluate cycle for a given random seed.
 
