@@ -1,0 +1,26 @@
+#!/bin/bash
+#PBS -N wf_gae_2seed
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=72:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o wf_gae_2seed.out
+#PBS -e wf_gae_2seed.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/Walkforward
+
+# Full walkforward: all 8 windows, 2 seeds, 300 epochs, mv reward, new GAE
+# mechanics, LSTM-Context excluded (its recurrent layer costs ~3.7x the
+# per-epoch time of the other three variants -- dropping it frees enough
+# walltime budget to afford 2 seeds instead of 1, directly addressing the
+# "n=1 seed per window" limitation flagged in the paper's Discussion).
+# Isolated to results_gae_2seed/ -- does not touch results/, results_gae/,
+# or results_gae_calib/.
+python -u run_walkforward.py --seeds 2 --epochs 300 --reward_mode mv \
+    --skip_variants lstm --out_dir results_gae_2seed --verbose
