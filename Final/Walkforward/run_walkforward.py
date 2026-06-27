@@ -142,8 +142,15 @@ RL_VARIANTS = [
 
 def evaluate_window(window: dict, n_seeds: int, epochs: int,
                      verbose: bool = False,
-                     reward_mode: str = 'mv', dsr_eta: float = 0.01) -> list:
-    """Returns list of per-run dicts (one row per (method, seed))."""
+                     reward_mode: str = 'mv', dsr_eta: float = 0.01,
+                     skip_variants: tuple = ()) -> list:
+    """Returns list of per-run dicts (one row per (method, seed)).
+
+    skip_variants: tuple of variant keys (e.g. ('lstm',)) to exclude from
+    this run -- useful for dropping the most expensive variant (LSTM-Context,
+    ~3.7x the per-epoch cost of the others due to recurrence) to fit a larger
+    seed/epoch budget within a walltime limit.
+    """
     rows = []
     label = window["label"]
 
@@ -159,7 +166,8 @@ def evaluate_window(window: dict, n_seeds: int, epochs: int,
         })
 
     # ── RL variants (n_seeds each) ────────────────────────────────────────
-    for variant_key, variant_name in RL_VARIANTS:
+    active_variants = [(k, n) for k, n in RL_VARIANTS if k not in skip_variants]
+    for variant_key, variant_name in active_variants:
         for seed in range(n_seeds):
             if verbose:
                 print(f"      [RL]  {variant_name:<22s} seed={seed}")
@@ -403,11 +411,17 @@ if __name__ == "__main__":
                               "Sharpe Ratio). LSTM variant is unaffected (separate reward).")
     parser.add_argument("--dsr_eta", type=float, default=0.01,
                          help="EMA decay rate for DSR running moments (only used if --reward_mode dsr).")
+    parser.add_argument("--skip_variants", type=str, default="",
+                         help="Comma-separated RL variant keys to skip (e.g. 'lstm'). "
+                              "LSTM-Context costs ~3.7x the per-epoch time of the other "
+                              "three variants due to its recurrent layer; dropping it "
+                              "roughly halves total walltime.")
     args = parser.parse_args()
+    skip_variants = tuple(v.strip() for v in args.skip_variants.split(",") if v.strip())
 
     os.makedirs(args.out_dir, exist_ok=True)
     print(f"\n[Walkforward]   device={DEVICE}   seeds={args.seeds}   epochs={args.epochs}   "
-          f"reward_mode={args.reward_mode}")
+          f"reward_mode={args.reward_mode}   skip_variants={skip_variants or 'none'}")
     print(f"               running {args.windows}/{len(WALK_FORWARD_WINDOWS)} windows")
 
     all_rows = []
@@ -431,7 +445,8 @@ if __name__ == "__main__":
             t_win = time.time()
             rows = evaluate_window(win, n_seeds=args.seeds, epochs=args.epochs,
                                     verbose=args.verbose,
-                                    reward_mode=args.reward_mode, dsr_eta=args.dsr_eta)
+                                    reward_mode=args.reward_mode, dsr_eta=args.dsr_eta,
+                                    skip_variants=skip_variants)
             print(f"     window {label} done in {time.time() - t_win:.1f}s", flush=True)
 
             # Checkpoint this window immediately so a walltime kill doesn't
