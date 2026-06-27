@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N ppo_calib2
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o ppo_calib2.out
+#PBS -e ppo_calib2.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/PPO
+
+# Longer calibration: Hard Routing, 1 seed, 100 epochs (vs the first
+# calibration's 20). The first run was clean and fast (~9 min for 20
+# epochs), this confirms the trend holds over a longer horizon before
+# committing to the full 1000-epoch/3-seed run. Isolated to
+# results/hard_ppo_calib2/.
+python -u run_ppo.py --variant hard --seeds 1 --epochs 100 --reward_mode mv --calib

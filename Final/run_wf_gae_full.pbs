@@ -1,0 +1,27 @@
+#!/bin/bash
+#PBS -N wf_gae_full
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=72:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o wf_gae_full.out
+#PBS -e wf_gae_full.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/Walkforward
+
+# Full walkforward: all 8 windows, 1 seed, 300 epochs (matching the original
+# protocol exactly), mv reward, with the new GAE/normalization/LR-annealing
+# training mechanics. Isolated to results_gae/ -- does not touch the
+# existing results/ (old mechanics) or results_gae_calib/ (1-window test)
+# directories, so all three remain available for comparison.
+#
+# Per-window checkpointing is already built into run_walkforward.py: if this
+# job is killed by walltime before finishing, completed windows are saved
+# and a re-submission picks up where it left off rather than restarting.
+python -u run_walkforward.py --seeds 1 --epochs 300 --reward_mode mv --out_dir results_gae --verbose
