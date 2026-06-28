@@ -424,9 +424,14 @@ def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
                 )
                 opt.step()
 
-                # slide buffer by 1
+                # Non-overlapping batches: clear rather than slide-by-1. The
+                # previous stride-1 sliding window produced ~1743 highly
+                # correlated, overlapping gradient updates per single episode
+                # (1763-step train set), which is the leading hypothesis for
+                # Hard Routing's early-peak-then-degrade pattern observed
+                # under the full 1000-epoch budget (see results_log.md §4c).
                 for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
-                    buf.pop(0)
+                    buf.clear()
 
             if done:
                 s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []

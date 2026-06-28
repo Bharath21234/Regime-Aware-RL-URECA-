@@ -357,9 +357,10 @@ def train_a2c(env, epochs=200, gamma=0.99, lr=1e-4,
                 )
                 opt.step()
 
-                # slide buffer by 1
+                # Non-overlapping batches: clear rather than slide-by-1 (see
+                # results_log.md §4c for why this matters).
                 for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
-                    buf.pop(0)
+                    buf.clear()
 
             if done:
                 s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []

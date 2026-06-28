@@ -117,9 +117,10 @@ def train_a2c(env, variant: str, num_assets: int,
                 )
                 opt.step()
 
-                # slide-by-1
+                # Non-overlapping batches: clear rather than slide-by-1 (see
+                # results_log.md §4c for why this matters).
                 for buf in (s_buf, w_buf, r_buf, m_buf):
-                    buf.pop(0)
+                    buf.clear()
 
             if done:
                 s_buf, w_buf, r_buf, m_buf = [], [], [], []

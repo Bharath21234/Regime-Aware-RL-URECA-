@@ -221,8 +221,10 @@ def train(env, epochs=1000):
                 )
                 optimizer.step()
 
+                # Non-overlapping batches: clear rather than slide-by-1 (see
+                # results_log.md §4c for why this matters).
                 for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
-                    buf.pop(0)
+                    buf.clear()
 
             if done:
                 s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
