@@ -1,0 +1,34 @@
+#!/bin/bash
+#PBS -N URC_RL_mv_gae_bf
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=48:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_RL_mv_gae_bf.out
+#PBS -e URC_RL_mv_gae_bf.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Re-run of run_mv_gae_hardmoe.pbs (job 3686465, results_log.md SS4b) with the
+# non-overlapping-batch fix (buf.clear() instead of buf.pop(0), see SS4g) now
+# baked into the trainer. SS4c showed Hard Routing's 1000-epoch result was
+# degraded by ~1743 overlapping updates/episode; SS4g's 300-epoch single-seed
+# test confirmed the fix reverses that degradation. This is the 3-seed,
+# full-epoch re-run needed to get a corrected SS4b comparison for the paper.
+
+# Back up the (buggy-mechanics) SS4b results before this run overwrites
+# results/hard/ and results/moe/.
+if [ -d results/hard ] && [ ! -d results/hard_run_3686465_prebatchfix ]; then
+    cp -r results/hard results/hard_run_3686465_prebatchfix
+fi
+if [ -d results/moe ] && [ ! -d results/moe_run_3686465_prebatchfix ]; then
+    cp -r results/moe results/moe_run_3686465_prebatchfix
+fi
+
+python -u run.py --variant both --seeds 3 --reward_mode mv
