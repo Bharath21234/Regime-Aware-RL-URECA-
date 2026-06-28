@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N URC_PPO_hardmoe
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=48:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_PPO_hardmoe.out
+#PBS -e URC_PPO_hardmoe.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/PPO
+
+# Full PPO comparison: Hard Routing + Soft MoE, 3 seeds, 1000 epochs each
+# (full default budget), mv reward. Based on calib1/calib2's consistent
+# ~18s/epoch pace, expect roughly ~30h total -- comfortably within the 48h
+# walltime request. Writes to results/hard_ppo/ and results/moe_ppo/,
+# directly comparable to results/hard/ and results/moe/ (A2C+GAE).
+python -u run_ppo.py --variant both --seeds 3 --reward_mode mv

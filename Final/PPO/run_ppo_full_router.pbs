@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N URC_PPO_router
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=48:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_PPO_router.out
+#PBS -e URC_PPO_router.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/PPO
+
+# Full PPO comparison: Learned Router, 3 seeds, 1000 epochs, mv reward.
+# Run as a separate job from Hard+MoE (same split pattern as the A2C runs)
+# to keep safe walltime margins. Based on calib1/calib2's pace, expect
+# roughly ~15h. Writes to results/router_ppo/.
+python -u run_ppo.py --variant router --seeds 3 --reward_mode mv
