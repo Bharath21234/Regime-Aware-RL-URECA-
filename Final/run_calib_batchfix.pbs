@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -N batchfix_calib
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o batchfix_calib.out
+#PBS -e batchfix_calib.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Hard, 1 seed, 300 epochs, mv reward, with the non-overlapping-batch fix.
+# 300 epochs (not 50) because the degradation pattern we're testing for only
+# became visible around epoch 200-300 in the previous run (avg reward
+# -3092 at epochs 0-90 vs -3931 at epochs 200-290, see results_log.md SS4c).
+# A 50-epoch test wouldn't actually exercise the hypothesis. If the reward
+# trend stays flat/improving through epoch 300 instead of degrading like
+# before, that confirms the update-frequency fix worked.
+python -u run.py --variant hard --seeds 1 --epochs 300 --reward_mode mv --calib
