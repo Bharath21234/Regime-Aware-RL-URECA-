@@ -1,25 +1,25 @@
 """
-Multi-seed experiment runner for regime-aware RL portfolio variants — PPO version.
+Multi-seed experiment runner for regime-aware RL portfolio variants — SAC version.
 
-Exact mirror of Final/run.py's CLI and structure, pointing at the PPO/
+Exact mirror of Final/run.py's CLI and structure, pointing at the SAC/
 subfolders instead of the A2C ones. Same architectures, same environments,
-same rewards — only the underlying RL algorithm (PPO vs A2C) differs, for a
+same rewards — only the underlying RL algorithm (SAC vs A2C) differs, for a
 direct side-by-side comparison.
 
-Output layout (relative to wherever this script is run from, i.e. PPO/):
-  results/hard_ppo/seed_{n}.json          — scalar metrics
-  results/hard_ppo/seed_{n}_training.png  — training reward curve
-  results/hard_ppo/seed_{n}_metrics_over_time.png
-  results/hard_ppo/summary.json           — all seeds aggregated
-  results/moe_ppo/seed_{n}.json
+Output layout (relative to wherever this script is run from, i.e. SAC/):
+  results/hard_sac/seed_{n}.json          — scalar metrics
+  results/hard_sac/seed_{n}_training.png  — training reward curve
+  results/hard_sac/seed_{n}_metrics_over_time.png
+  results/hard_sac/summary.json           — all seeds aggregated
+  results/moe_sac/seed_{n}.json
   ...
 
-Usage (run from the Final/PPO/ directory):
-  python run_ppo.py                        # both variants, 4 seeds each
-  python run_ppo.py --seeds 3              # quick smoke-test
-  python run_ppo.py --variant hard         # hard routing only
-  python run_ppo.py --variant moe          # soft MoE only
-  python run_ppo.py --seeds 5 --variant hard
+Usage (run from the Final/SAC/ directory):
+  python run_sac.py                        # both variants, 4 seeds each
+  python run_sac.py --seeds 3              # quick smoke-test
+  python run_sac.py --variant hard         # hard routing only
+  python run_sac.py --variant moe          # soft MoE only
+  python run_sac.py --seeds 5 --variant hard
 """
 
 import argparse
@@ -78,22 +78,22 @@ def run_variant(variant: str, n_seeds: int, seed_start: int = 0, reward_mode: st
     Returns (list of per-seed metric dicts without the 'rewards' key, out_root used).
     """
     print(f"\n{'#'*70}")
-    print(f"  Loading {variant.upper()} (PPO) module  (data download happens here)...")
+    print(f"  Loading {variant.upper()} (SAC) module  (data download happens here)...")
     print(f"{'#'*70}\n")
 
     if variant == 'hard':
         variant_dir = os.path.join(HERE, '3_Agent_Select_1')
-        out_root    = os.path.join(HERE, 'results', 'hard_ppo')
+        out_root    = os.path.join(HERE, 'results', 'hard_sac')
         sys.path.insert(0, variant_dir)
         from Finrlmain import run_experiment          # noqa: E402
     elif variant == 'moe':
         variant_dir = os.path.join(HERE, '3_Agent_Select_3')
-        out_root    = os.path.join(HERE, 'results', 'moe_ppo')
+        out_root    = os.path.join(HERE, 'results', 'moe_sac')
         sys.path.insert(0, variant_dir)
         from main_moe import run_experiment           # noqa: E402
     elif variant == 'router':
         variant_dir = os.path.join(HERE, '3_Agent_Select_4')
-        out_root    = os.path.join(HERE, 'results', 'router_ppo')
+        out_root    = os.path.join(HERE, 'results', 'router_sac')
         sys.path.insert(0, variant_dir)
         from main_router import run_experiment        # noqa: E402
     else:
@@ -109,7 +109,7 @@ def run_variant(variant: str, n_seeds: int, seed_start: int = 0, reward_mode: st
 
     for seed in range(seed_start, seed_start + n_seeds):
         print(f"\n{'='*60}")
-        print(f"  {variant.upper()}-PPO | seed {seed} / {seed_start + n_seeds - 1} | reward_mode={reward_mode}")
+        print(f"  {variant.upper()}-SAC | seed {seed} / {seed_start + n_seeds - 1} | reward_mode={reward_mode}")
         print(f"{'='*60}")
 
         # Seed both frameworks before calling run_experiment
@@ -128,12 +128,12 @@ def run_variant(variant: str, n_seeds: int, seed_start: int = 0, reward_mode: st
         save_json({'rewards': rewards},   os.path.join(out_root, f'seed_{seed}_rewards.json'))
 
         summary_rows.append(scalar_m)
-        print(f"  -> {variant}-ppo seed {seed} done | "
+        print(f"  -> {variant}-sac seed {seed} done | "
               f"Return: {scalar_m.get('Total Return (%)', 'N/A'):.2f}% | "
               f"Sharpe: {scalar_m.get('Annualised Sharpe', 'N/A'):.4f}")
 
     save_json({'runs': summary_rows}, os.path.join(out_root, 'summary.json'))
-    print(f"\n  All {n_seeds} seeds complete for {variant}-ppo.")
+    print(f"\n  All {n_seeds} seeds complete for {variant}-sac.")
     return summary_rows, out_root
 
 
@@ -178,7 +178,7 @@ def print_aggregate(variant: str, rows: list) -> dict:
     stats = compute_aggregate(rows)
     w = 70
     print(f"\n{'='*w}")
-    print(f"  AGGREGATE STATS — {variant.upper()}-PPO ({len(rows)} seeds, 95% bootstrap CI)")
+    print(f"  AGGREGATE STATS — {variant.upper()}-SAC ({len(rows)} seeds, 95% bootstrap CI)")
     print(f"{'='*w}")
     hdr = f"  {'Metric':<25s}  {'Mean':>9s}  {'±Std':>7s}  {'Median':>8s}  {'95% CI':>17s}  {'Min':>8s}  {'Max':>8s}"
     print(hdr)
@@ -191,7 +191,7 @@ def print_aggregate(variant: str, rows: list) -> dict:
     return stats
 
 
-def print_comparison(variant_rows: dict, title: str = "Hard Routing vs Soft MoE (PPO)"):
+def print_comparison(variant_rows: dict, title: str = "Hard Routing vs Soft MoE (SAC)"):
     """Welch's t-test between two variants. Prints p-values.
 
     variant_rows: {'hard': [row_dict, ...], 'moe': [row_dict, ...]}
@@ -232,7 +232,7 @@ def print_comparison(variant_rows: dict, title: str = "Hard Routing vs Soft MoE 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Multi-seed experiment runner for regime-aware RL variants (PPO).'
+        description='Multi-seed experiment runner for regime-aware RL variants (SAC).'
     )
     parser.add_argument(
         '--seeds', type=int, default=4,
@@ -291,17 +291,17 @@ if __name__ == '__main__':
     if 'hard' in collected and 'moe' in collected:
         print_comparison(
             {'hard': collected['hard']['rows'], 'moe': collected['moe']['rows']},
-            title="Hard Routing vs Soft MoE (PPO)",
+            title="Hard Routing vs Soft MoE (SAC)",
         )
     if 'hard' in collected and 'router' in collected:
         print_comparison(
             {'hard': collected['hard']['rows'], 'moe': collected['router']['rows']},
-            title="Hard Routing vs Learned Router (PPO)",
+            title="Hard Routing vs Learned Router (SAC)",
         )
     if 'moe' in collected and 'router' in collected:
         print_comparison(
             {'hard': collected['moe']['rows'], 'moe': collected['router']['rows']},
-            title="Soft MoE vs Learned Router (PPO)",
+            title="Soft MoE vs Learned Router (SAC)",
         )
 
     print(f"\nDone. Results in {os.path.join(HERE, 'results')}/")

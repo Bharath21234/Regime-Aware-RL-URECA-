@@ -6,40 +6,38 @@ MAX_WEIGHT =  0.20
 
 class ActorMoE(nn.Module):
     """
-    Mixture-of-Experts Actor: Blends num_experts specialised sub-networks
-    based on HMM regime probabilities (one expert head per HMM regime).
+    Mixture-of-Experts Actor: Blends 4 specialised sub-networks
+    based on HMM regime probabilities.
     Returns (mean, std) for a Gaussian policy that supports negative weights.
     """
-    def __init__(self, input_dim, num_assets, hidden=256, num_experts=4):
+    def __init__(self, input_dim, num_assets, hidden=256):
         super().__init__()
-        self.num_experts = num_experts
         self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim - num_experts, hidden),  # regime probs excluded from extractor
+            nn.Linear(input_dim - 4, hidden),  # -4: regime probs excluded from extractor
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU()
         )
-        # Expert heads, ordered Bear -> Bull (K=4: Bear, Sideways Down, Sideways Up, Bull)
+        # Expert heads (Bear, Sideways Down, Sideways Up, Bull)
         self.experts = nn.ModuleList([
-            nn.Linear(hidden, num_assets) for _ in range(num_experts)
+            nn.Linear(hidden, num_assets) for _ in range(4)
         ])
         # Learned per-asset log-std (shared across experts)
         self.log_std = nn.Parameter(torch.zeros(num_assets))
 
     def forward(self, x):
         """
-        x: [batch, obs_dim]  (last num_experts elements are regime probabilities)
+        x: [batch, obs_dim]  (last 4 elements are regime probabilities)
         Returns (mean, std), each [batch, num_assets].
         mean is tanh-scaled to land inside [MIN_WEIGHT, MAX_WEIGHT].
         """
-        K = self.num_experts
-        regime_probs = x[:, -K:]  # [batch, K]
-        features = self.feature_extractor(x[:, :-K])  # [batch, hidden] — exclude regime probs
+        regime_probs = x[:, -4:]  # [batch, 4]
+        features = self.feature_extractor(x[:, :-4])  # [batch, hidden] — exclude regime probs
 
         # Blend expert logits via soft regime gating
         expert_outputs = torch.stack(
             [head(features) for head in self.experts], dim=1
-        )  # [batch, K, num_assets]
+        )  # [batch, 4, num_assets]
         combined_logits = torch.sum(
             expert_outputs * regime_probs.unsqueeze(-1), dim=1
         )  # [batch, num_assets]

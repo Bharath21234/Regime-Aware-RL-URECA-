@@ -1,0 +1,50 @@
+#!/bin/bash
+#PBS -N wf_soft_epcal
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o wf_soft_epcal.out
+#PBS -e wf_soft_epcal.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/Walkforward
+
+# Soft epoch-budget calibration (results_log.md section 6e finding 4).
+# Hypothesis: Soft's low LR (3e-5, vs Hard's 1e-4) combined with linear LR
+# annealing leaves it undertrained at the walkforward's 300-epoch budget.
+#
+# Test: retrain Soft ONLY, on W1 and W7, at the full 1000-epoch
+# single-period budget, 2 seeds, same mv reward. NOTE (2026-07-04): the
+# original comparison baseline (results_gae_2seed) turned out to have run
+# the OLD sliding-window code -- the correct baseline for these 1000-epoch
+# Soft numbers is the W1/W7 Soft rows of results_batchfix_2seed/ (job
+# run_wf_batchfix_2seed.pbs), which runs the same 300-epoch protocol under
+# the fixed code. Submit both; compare Soft@1000 (this job) vs Soft@300
+# (that job) on W1/W7 to isolate the epoch-budget effect.
+#
+# Mechanism: run_walkforward.py skips any window whose window_<label>_rows.json
+# already exists in --out_dir. Pre-seeding the out_dir with the 300-epoch
+# cached results for W2-W6 makes the job train only W1 (fresh, absent) and W7
+# (fresh, absent), while --windows 7 stops before W8. Only the freshly written
+# window_W1_rows.json and window_W7_rows.json matter; the aggregate table this
+# job prints at the end mixes 300- and 1000-epoch results and MUST BE IGNORED.
+#
+# Cost estimate: Soft-only, 2 seeds, 1000 epochs on W1 (5y train) + W7 (8y
+# train) at ~4-7s/epoch/seed => roughly 6-7h total; 24h walltime is generous.
+
+OUT=results_soft_epochs_calib
+mkdir -p "$OUT"
+for w in W2 W3 W4 W5 W6; do
+    cp -n "results_gae_2seed/window_${w}_rows.json" "$OUT/" || {
+        echo "FATAL: missing results_gae_2seed/window_${w}_rows.json cache"; exit 1; }
+done
+
+python -u run_walkforward.py --windows 7 --seeds 2 --epochs 1000 \
+    --reward_mode mv --skip_variants baseline,hard,lstm \
+    --out_dir "$OUT" --verbose

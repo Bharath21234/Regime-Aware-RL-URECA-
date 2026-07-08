@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N URC_moe_bf_s2
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=10:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_moe_bf_s2.out
+#PBS -e URC_moe_bf_s2.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Finisher for job 3709637 (URC_RL_mv_gae_bf), which was killed by the 30h
+# walltime 90 seconds over budget, mid-way through MoE seed 2. Completed and
+# already saved: Hard seeds 0-2, MoE seeds 0-1. This job runs ONLY the
+# missing MoE seed 2 via --seed_start (requires the updated run.py with the
+# --seed_start option -- git pull first).
+#
+# Timing basis: the killed job did 5 full runs + most of a 6th in 30h
+# => ~5-7h per MoE seed at 1000 epochs; 10h requested for margin.
+#
+# NOTE: results/moe/seed_2.json currently on the cluster is a STALE leftover
+# from pre-batchfix job 3686465 (verified: values match results_log 4b seed 2).
+# This job overwrites it with the corrected-mechanics result -- that is the
+# intent. summary.json will be rewritten from seed 2 only; pooled stats are
+# computed locally from the per-seed JSONs.
+
+python -u run.py --variant moe --seeds 1 --seed_start 2 --reward_mode mv --epochs 1000

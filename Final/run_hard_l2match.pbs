@@ -1,0 +1,34 @@
+#!/bin/bash
+#PBS -N URC_hard_l2m
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=20:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_hard_l2m.out
+#PBS -e URC_hard_l2m.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# L2-confound control run (the paper's own Limitation #4): Hard RA-RL with
+# the L2 logit-penalty coefficient matched to Soft RA-RL's (0.01 instead of
+# Hard's usual 0.5), everything else identical (single-period, mv reward,
+# 1000 epochs, 3 seeds, batchfix mechanics). Compared against the corrected
+# Hard run (L2=0.5) and Soft (L2=0.01):
+#   - if Hard@0.01 still loses to Soft, the L2 asymmetry is NOT driving the
+#     headline gap -> the limitation paragraph can be substantially defused;
+#   - if Hard@0.01 closes the gap, the paper's claim must be re-scoped.
+#
+# L2_COEF is read by 3_Agent_Select_1/Finrlmain.py train_a2c() (default 0.5).
+# Output isolated to results/hard_l2match/ via --tag.
+#
+# Cost: 3 seeds x 1000 epochs at the MEASURED ~5h/Hard-seed (job 3709637
+# timing) => ~15h. 20h requested after 3709637 overran its 30h estimate.
+
+L2_COEF=0.01 python -u run.py --variant hard --seeds 3 --reward_mode mv \
+    --epochs 1000 --tag l2match

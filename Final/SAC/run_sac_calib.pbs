@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N URC_SAC_calib
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_SAC_calib.out
+#PBS -e URC_SAC_calib.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/SAC
+
+# SAC calibration (mirrors the PPO calibration pattern, results_log 4f):
+# Hard variant, 1 seed, 50 epochs, mv reward. Purpose before any full run:
+#   1. confirm the pipeline runs end-to-end on the cluster (data download,
+#      HMM fit, training, eval, plots);
+#   2. read the reward trajectory: SAC is off-policy + sample-efficient, so
+#      50 epochs (~87k env steps, ~87k gradient updates) should already show
+#      clear learning if healthy — flat/oscillating alpha or reward means
+#      hyperparameters need attention before committing to full 3-seed runs;
+#   3. measure wall-clock per epoch to budget the full job.
+#
+# Unit tests (tests_sac.py) pass locally before this was submitted.
+
+python -u tests_sac.py
+
+python -u run_sac.py --variant hard --seeds 1 --epochs 50 --reward_mode mv --calib

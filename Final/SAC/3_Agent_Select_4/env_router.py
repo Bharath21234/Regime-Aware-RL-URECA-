@@ -77,10 +77,9 @@ class MixturePortfolioEnv(gym.Env):
         # Baseline state
         state = np.vstack([covs, techs]).astype(np.float32).flatten()
         
-        # Append probabilities (column count follows the HMM's n_regimes)
+        # Append probabilities
         probs = self.regime_probs_df[self.regime_probs_df.date == date].iloc[0]
-        prob_cols = sorted(c for c in self.regime_probs_df.columns if c.startswith('regime_p_'))
-        prob_vec = probs[prob_cols].values.astype(np.float32)
+        prob_vec = probs[['regime_p_0', 'regime_p_1', 'regime_p_2', 'regime_p_3']].values.astype(np.float32)
         
         return np.concatenate([state, prob_vec])
 

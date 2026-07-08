@@ -507,6 +507,352 @@ queued as job (see PBS script `run_mv_gae_hardmoe_batchfix.pbs`).
 
 ---
 
+## 5. PPO Full Comparison — all 3 variants × 3 seeds, single test period
+
+**Status: COMPLETE** — jobs 3689517 (`hardmoe`: Hard-PPO + Soft-PPO, walltime
+24h25m of 48h) and 3689530 (`router`: Router-PPO, walltime 14h45m of 48h;
+resubmission of 3689518, which crashed at startup on a missing
+`hmm_probabilistic` module before the fix synced to the cluster). Both Exit
+Status 0, completed 2026-06-30, logs/results pulled 2026-07-04.
+`reward_mode=mv`, 1000 epochs, same single-period protocol (train 2015-2021,
+test 2022-2024) and same seeds (0-2) as the A2C comparison. Results in
+`Final/PPO/results/{hard_ppo,moe_ppo,router_ppo}/`.
+
+### 5a — Per-seed results
+
+| Metric | Hard S0 | Hard S1 | Hard S2 | **Hard mean±std** | Soft S0 | Soft S1 | Soft S2 | **Soft mean±std** | Rtr S0 | Rtr S1 | Rtr S2 | **Rtr mean±std** |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Return (%) | 51.36 | 49.22 | 21.44 | **40.67±16.69** | 28.07 | 74.86 | 57.36 | **53.43±23.64** | 21.94 | 48.66 | -27.80 | **14.27±38.81** |
+| Sharpe | 0.886 | 0.809 | 0.483 | **0.726±0.214** | 0.538 | 0.975 | 0.808 | **0.774±0.221** | 0.454 | 0.767 | -0.281 | **0.314±0.538** |
+| Max DD (%) | 31.24 | 39.59 | 38.35 | **36.40±4.51** | 46.99 | 40.92 | 37.10 | **41.67±4.99** | 36.40 | 33.46 | 55.35 | **41.74±11.88** |
+| Sortino | 0.918 | 0.819 | 0.479 | **0.739±0.230** | 0.534 | 0.995 | 0.854 | **0.794±0.236** | 0.461 | 0.807 | -0.274 | **0.331±0.552** |
+
+### 5b — Welch's t-tests (n=3 per arm, one-tailed in the paper's claimed direction)
+
+| Comparison | Return p₁ | Sharpe p₁ | MaxDD p₁ | Sortino p₁ |
+|---|---|---|---|---|
+| Soft vs Hard | 0.246 | 0.401 | 0.877 (wrong dir) | 0.393 |
+| Soft vs Router | 0.112 | 0.137 | 0.497 | 0.142 |
+| Hard vs Router | 0.183 | 0.158 | 0.264 | 0.166 |
+
+Nothing significant at n=3.
+
+### 5c — Key findings
+
+1. **Sharpe/Return/Sortino ranking preserved: Soft > Hard > Router** —
+   directionally consistent with the A2C comparison.
+2. **Router instability replicates under PPO**: seed 2 collapsed (-27.8%,
+   negative Sharpe); Router's variance is ~1.6-2.5× the other variants' on
+   every metric. The external-signal-vs-learned-routing finding is now
+   **algorithm-robust** (holds under both A2C and PPO). Strongest
+   cross-algorithm claim in the project.
+3. **The Soft-vs-Hard gap largely closes under PPO** (Sharpe 0.774 vs 0.726,
+   p₁=0.40 — a statistical tie), and **Max Drawdown reverses**: Hard-PPO
+   36.4% vs Soft-PPO 41.7%, where under A2C drawdown was Soft's most
+   significant win (Run B: 20.7% vs 43.2%, p=0.031). Consistent with the
+   §4c/§4g mechanism: Hard's A2C-era underperformance was substantially
+   driven by unconstrained on-policy updates, which PPO's clipped objective
+   prevents by construction (as §6.3 of the paper itself predicted).
+4. **Absolute levels are not comparable across algorithms**: PPO agents earn
+   much higher returns (40-53% vs A2C's 5-23%) at much higher drawdowns
+   (36-42%). Compare rankings within-algorithm only.
+5. **Framing for ICAIF**: present PPO as mechanism-validation ("the soft-gate
+   advantage is largest when the optimizer lacks trust-region control;
+   stabilising the optimizer rescues discrete routing"), *not* as a simple
+   robustness confirmation — a reviewer reading p₁=0.40 and the drawdown
+   reversal would correctly reject the latter framing.
+6. Next step queued: 2-3 extra Soft/Router PPO seeds to push the replicated
+   Router-instability contrast (p₁≈0.11-0.14) toward significance.
+
+---
+
+## 6. Walkforward v2 — new training mechanics, 2 seeds/window (job 3687571)
+
+**Status: COMPLETE** — job 3687571, Exit Status 0, completed 2026-06-30
+10:59, walltime **70h56m of 72h** (near-miss on the budget). `--seeds 2
+--epochs 300 --reward_mode mv --skip_variants lstm`, all 8 windows trained
+fresh (W1 included). Results in `Final/Walkforward/results_gae_2seed/`,
+pulled 2026-07-04. Addresses the "n=1 seed per window" limitation of §3
+and applies the GAE/normalisation/LR-annealing mechanics (§4).
+
+**⚠ Mechanics-version caveat — RESOLVED 2026-07-04: this job ran the OLD
+sliding-window code.** Cluster-side verification (git reflog + file mtime):
+job started 2026-06-27 12:03 (reflog shows the pull-and-submit at
+12:02:57), but the batch-fix commit 23a87ae only reached the cluster at
+2026-06-28 19:33 — ~31h into the run. Python imports `train.py` once at
+process start, so the entire 71h job used the old `buf.pop(0)` sliding
+buffer. **This run is therefore the GAE + sliding-window combination that
+§4c showed is pathological**: Hard peaks early then degrades under it, so
+at 300 epochs Hard was measured near its early peak while Soft (LR 3e-5 +
+annealing) was likely undertrained. The §6a "reversal" is doubly
+confounded and must not be used in the paper. Superseding re-run with the
+fixed code queued: `run_wf_batchfix_2seed.pbs` → `results_batchfix_2seed/`.
+
+### 6a — Aggregate table (mean across 8 windows, RL methods seed-averaged within window)
+
+| Method | Sharpe | vs §3a (old mechanics, 1 seed) | Return % | Max DD % | Sortino |
+|---|---|---|---|---|---|
+| Equal-Weight | 1.645 | 1.645 (=, deterministic ✓) | 11.56 | 12.63 | 1.655 |
+| Markowitz MVO | 1.130 | 1.130 (=) | 12.16 | 16.03 | 1.222 |
+| S&P 500 B&H | 1.104 | 1.104 (=) | 6.39 | 13.69 | 1.097 |
+| Baseline (no gate) | 0.455 | 0.348 (↑) | 4.97 | 17.12 | 0.534 |
+| **Hard Routing** | **1.133** | 1.176 (≈) | 14.83 | 15.94 | 1.286 |
+| **Soft MoE (ours)** | **0.848** | **1.352 (↓↓)** | 9.07 | 15.74 | 0.906 |
+
+**The §3 ranking reverses: Hard is now the best RL variant on aggregate
+Sharpe; Soft drops from 1.352 to 0.848**, falling below Hard, MVO and SPY.
+(LSTM-Context excluded from this run by design.)
+
+### 6b — Per-window Sharpe (mean of 2 seeds)
+
+| Window | Test period | EW | MVO | SPY | Baseline | Hard | Soft |
+|---|---|---|---|---|---|---|---|
+| W1 | H1-2020 COVID crash | 0.325 | 1.150 | 0.034 | 0.390 | **1.047** | 0.463 |
+| W2 | H2-2020 recovery | 3.176 | 0.952 | 2.429 | 2.400 | 2.665 | 2.131 |
+| W3 | H1-2021 bull | 3.102 | 0.325 | 2.451 | 0.115 | **3.983** | 2.200 |
+| W4 | H2-2021 bull | 2.033 | 3.257 | 1.724 | -1.055 | -0.234 | 0.012 |
+| W5 | H1-2022 bear onset | -1.469 | -1.527 | -1.724 | -0.836 | -0.931 | **-0.688** |
+| W6 | H2-2022 bear/recov | 0.920 | -0.064 | 0.216 | 1.232 | 0.223 | **1.570** |
+| W7 | H1-2023 bull | 2.870 | 3.394 | 2.322 | -0.053 | **2.558** | 0.389 |
+| W8 | H2-2023 bull | 2.203 | 1.555 | 1.382 | 1.446 | -0.242 | 0.707 |
+
+**The W1 COVID headline flips**: §3b had Soft 1.001 vs Hard 0.052; this run
+has **Hard 1.047 vs Soft 0.463**. The single most-quoted regime-transition
+anecdote in the paper points the other way under the new mechanics.
+Interestingly W6 also flips (was Hard 2.825 vs Soft 0.196; now Soft 1.570
+vs Hard 0.223) — both "anomaly windows" swapped owners, consistent with
+these being seed-noise artifacts rather than architectural regularities.
+
+### 6c — Within-window seed spread (Sharpe, |seed0 − seed1|)
+
+Largest spreads: Soft W6 **2.89** (3.01 vs 0.13), Soft W3 **2.55**
+(3.47 vs 0.93), Soft W8 **2.46** (-0.52 vs 1.94), Hard W7 **2.24**
+(3.68 vs 1.44), Hard W8 1.58, Hard W6 1.43. Median spread ≈ 0.6 Sharpe.
+With 2 seeds and spreads of this size, window-level means are extremely
+noisy; the aggregate Hard-vs-Soft gap (1.133 vs 0.848 ≈ 0.29) is well
+inside seed noise.
+
+### 6d — Wilcoxon signed-rank (n=8 windows, per-window Sharpe)
+
+| Comparison | p (2-tail) | sig |
+|---|---|---|
+| Equal-Weight vs S&P 500 B&H | 0.0078 | ** |
+| Soft vs Hard | 0.6406 | ns |
+| Soft vs Baseline | 0.2500 | ns |
+| Hard vs Baseline | 0.4609 | ns |
+| Soft vs Equal-Weight | 0.1094 | ns |
+
+No RL-vs-RL comparison is anywhere near significance — same as §3c.
+
+### 6e — Key findings & interpretation
+
+**[Superseded 2026-07-04 — see resolved caveat above: this run used the old
+sliding-window code, so findings 1-4 describe the pathological §4c
+mechanics, not the fixed ones. Kept for the audit trail; the
+`results_batchfix_2seed` re-run replaces this section's numbers.]**
+
+1. **§3d finding 1 ("Soft MoE is the best RL method") does not survive the
+   re-run**, and §3d finding 2 (COVID window) actively reverses. The old
+   Table III narrative must not be used for ICAIF.
+2. **The honest statistical read is a tie, not a reversal**: given the seed
+   spreads (§6c) and Wilcoxon p=0.64, Hard and Soft are indistinguishable
+   in the walk-forward once training is stabilised. Both the old ranking
+   (Soft first) and the new one (Hard first) are noise-level orderings.
+3. **Triangulates with §5 (PPO)**: two independent stabilisation routes
+   (GAE-era mechanics here, PPO there) both collapse the Soft-vs-Hard gap
+   that the original A2C runs showed. The architecture story that survives
+   everywhere: Router unstable/worst (§2, §5), gated variants ≥ no-gate
+   Baseline, EW tops all (1/N).
+4. **Open mechanical suspect — Soft undertraining at 300 epochs**: Soft's
+   LR (3e-5) is 3.3× smaller than Hard's (1e-4), and the *new* mechanics
+   anneal LR to 0.1× — a compounding penalty at a 300-epoch budget that
+   didn't exist in the old-mechanics §3 run (no annealing) and doesn't
+   bind at 1000 epochs (single-period runs, where Soft does fine under the
+   new mechanics, §4b). Calibration run queued: Soft-only, W1+W7 (its two
+   biggest drops), 1000 epochs, 2 seeds — see
+   `run_wf_soft_epochs_calib.pbs`. If Soft recovers toward its §3b values,
+   the §6a reversal is an artifact of the epoch budget interacting with
+   LR annealing, not architecture.
+5. Baseline improved (0.348 → 0.455) under the new mechanics, consistent
+   with the stabilisation helping the architectures that were previously
+   most update-noise-sensitive.
+
+---
+
+## 7. Statistical upgrades + rule baseline (local analyses, 2026-07-04)
+
+Three zero-compute additions (ICAIF ideas #20-22). Scripts:
+`analysis_paired_stats.py`, `analysis_gated_ew.py`.
+
+### 7a — Paired seed-matched tests (replacing unpaired Welch)
+
+All architecture comparisons share seeds, so observations are paired;
+paired tests remove between-seed variance. One-tailed:
+
+**Pooled Runs A+B+C (Table I data, n=9 pairs) — headline result STRENGTHENS:**
+
+| Metric | mean diff (Soft−Hard) | paired t p₁ | Wilcoxon p₁ | old Welch p₁ |
+|---|---|---|---|---|
+| Return (%) | +15.71 | 0.0437* | 0.0273* | 0.0369 |
+| Sharpe | +0.242 | 0.0258* | 0.0273* | 0.0243 |
+| Max DD (%) | −12.37 | 0.0025** | 0.0020** | 0.0037 |
+| Sortino | +0.267 | 0.0128* | 0.0195* | 0.0176 |
+
+All four metrics now significant under BOTH the parametric (paired t) and
+non-parametric (Wilcoxon signed-rank) paired tests — a stronger, more
+defensible claim than Welch alone. **Use paired tests in the ICAIF paper.**
+
+**Run B alone (n=3 pairs)**: Sortino flips to significant (p₁=0.0398 vs
+Welch 0.0793), Max DD stays significant (0.0273), Sharpe improves to
+near-trend (0.0536 vs 0.1038).
+
+**PPO (n=3 pairs)**: pairing does NOT rescue Soft-vs-Hard (Sharpe p₁=0.42) —
+confirms the §5 conclusion that the PPO gap is genuinely small, not a
+power artifact. Soft-vs-Router: p₁≈0.12-0.15, still awaiting extra seeds.
+
+### 7b — Jobson-Korkie-Memmel Sharpe tests on daily returns
+
+Implemented (JK 1981 + Memmel 2003 correction) in
+`analysis_paired_stats.py` Part B; runs on any walkforward results dir
+(daily series, n≈998 obs). On the superseded old-mechanics walkforward:
+no RL-vs-RL Sharpe difference is significant at daily granularity
+(closest: Hard vs Baseline, z=+1.82, p=0.068). Pipeline validated; rerun
+on `results_batchfix_2seed` for paper numbers. Single-period runs don't
+save daily test returns yet (ideas #16) so JK-Memmel can't run there.
+
+### 7c — HMM-gated Equal-Weight rule baseline (the "why RL at all?" test)
+
+Rule: Bear regime → cash (hard) or equity exposure = 1−P(Bear) (soft);
+otherwise 1/N. Zero training. EW daily returns from the walkforward's own
+deterministic EW rows (final regardless of the RL-code caveat);
+single-period EW from yfinance daily-rebalanced 1/N (frictionless).
+
+| Protocol | EW | hard-gated EW | soft-gated EW |
+|---|---|---|---|
+| Walk-forward agg Sharpe | 1.645 | 1.559 | 1.561 |
+| Single-period Sharpe | 0.410 | 0.161 | 0.188 |
+| Single-period Return % | 12.64 | 2.56 | 3.59 |
+
+**Finding — favourable for the paper**: the hand-crafted rule DESTROYS
+value. The gate only triggers in W1 (9.7% of days, tiny gain) and W5
+(16.3%, hurts), and on the single-period test naive Bear de-risking cuts
+EW's Sharpe from 0.41 to 0.16. Meanwhile Soft RA-RL (0.568) beats both
+plain EW (0.410) and gated EW on the single-period protocol. The HMM
+signal is NOT directly monetizable by a simple rule — the value comes
+from RL learning *how* to use it (which assets, how much, when), which is
+exactly the paper's thesis. Also noteworthy: single-period EW Sharpe
+(0.410) < Soft RA-RL (0.568) — the 1/N dominance is a walk-forward-2020s
+phenomenon, not universal; worth a sentence in §6.2's 1/N discussion.
+
+### 7d — Multi-asset feasibility probe (zero training; scopes the follow-up paper)
+
+`analysis_multiasset_probe.py`. Adds a defensive leg (50% TLT + 50% GLD) the
+Bear-regime rule can rotate into, instead of cash: hard-rotate (Bear → 100%
+defensive), soft-rotate (P(Bear)-weighted), vs EW-equity, static 80/20, and
+7c's cash-gated. All legs yfinance, daily-rebalanced, rf=0. (Internal
+comparisons self-consistent; EW levels differ slightly from 7c's
+backtest-derived rows due to EW construction details.)
+
+Per-window Sharpe, the two Bear-triggered windows (all other windows: gate
+never fires, all variants = EW-equity):
+
+| Window | EW-equity | hard-rotate | soft-rotate | cash-gated | defensive leg itself |
+|---|---|---|---|---|---|
+| W1 COVID crash | 0.171 | **0.470** | 0.447 | 0.264 | **+2.03 Sharpe, +20.2%** |
+| W5 2022 bear onset | -1.686 | **-2.897** | -2.831 | -2.396 | **-1.76 Sharpe, -12.0%** |
+
+Single-period (2022-2024): hard-rotate Sharpe **-0.077 vs EW 0.410 — worse,
+and the difference is JK-Memmel SIGNIFICANT (z=-2.04, p=0.042)**, the first
+significant daily-level result produced in this project, and it's *against*
+the fixed rule.
+
+**Interpretation — the key insight for the multi-asset follow-up:**
+"Bear → bonds/gold" is itself a regime-dependent strategy. It pays exactly
+as theory predicts in a flight-to-quality crash (COVID: defensive leg +20%,
+rotation nearly triples the window Sharpe) and BACKFIRES in a rate-driven
+bear (2022: TLT crashed alongside equities, stock-bond correlation flipped
+positive). A fixed rule cannot distinguish crisis *types* — and a 4-state
+HMM collapses all bears into one state. Implications:
+1. Multi-asset regime rotation is NOT free alpha — the follow-up is a real
+   research problem, not a layup. Good news for its publishability, bad
+   news for anyone expecting easy gains.
+2. The follow-up needs either bear-type-aware regime detection (richer
+   macro features — rates/inflation — and/or more states; note the 7/BIC
+   finding that K=5/6 states exist but are data-starved at 0.3-2% occupancy)
+   or learned per-regime allocation (RL) that can infer *which* defensive
+   asset works from recent data — i.e., exactly the RA-RL architecture,
+   with a stronger motivation than in equities-only.
+3. For the ICAIF paper: one sentence in future work can now cite this
+   quantitatively ("a fixed defensive-rotation rule helps in liquidity
+   crises (+0.30 Sharpe, COVID) but destroys value in rate-driven bears
+   (-1.21, 2022), motivating learned multi-asset regime allocation").
+Sample-size caveat: 2015-2024 contains exactly ONE bear of each type — the
+follow-up likely needs a longer history (2000s: dot-com + GFC are both
+flight-to-quality; 1970s-style rate bears are scarce in ETF-era data).
+
+---
+
+## 8. Corrected single-period Hard-vs-Soft (batchfix mechanics) — PARTIAL
+
+**Status: 5/6 seeds complete** — job 3709637 (`URC_RL_mv_gae_bf`, 30h
+request) was killed by the walltime limit **90 seconds over budget**
+(108090s vs 108000s), mid-way through MoE seed 2. Completed and saved:
+Hard seeds 0-2, MoE seeds 0-1. Finisher for MoE seed 2 queued
+(`run_moe_bf_seed2.pbs`, 10h, needs the `--seed_start` run.py update
+pulled on the cluster first). Local copies in `results/hard_bf/`,
+`results/moe_bf/` — **stale leftovers quarantined** (`hard_bf/seed_3`,
+`moe_bf/seed_2` were pre-batchfix files from the shared cluster dirs;
+verified against job logs before removal to `stale_prev_run/`).
+
+Timing lesson: ~5h/Hard-seed, ~6-7h/MoE-seed at 1000 epochs under the new
+mechanics — substantially slower than the 3.9h/seed extrapolated from the
+300-epoch Hard calibration. `run_moe_kregimes.pbs` bumped 30→40h and
+`run_hard_l2match.pbs` 16→20h accordingly.
+
+### 8a — Partial results (single-period, 1000 epochs, batchfix mechanics)
+
+| Metric | Hard (n=3) | Soft (n=2, PARTIAL) |
+|---|---|---|
+| Return (%) | +0.28 ± 28.00 | +31.45 ± 40.21 |
+| Sharpe | +0.142 ± 0.364 | +0.498 ± 0.335 |
+| Max Drawdown (%) | 48.87 ± 3.93 | 55.79 ± 1.96 |
+| Sortino | +0.144 ± 0.364 | +0.502 ± 0.333 |
+
+Per-seed raw values (from the scp'd `results/hard_bf/`, `results/moe_bf/`
+seed JSONs; each 500 trading days, $1M start):
+
+| Variant / seed | Return (%) | Sharpe | MaxDD (%) | Sortino | Final Value ($) |
+|---|---|---|---|---|---|
+| Hard seed 0 | -17.50 | -0.083 | 50.72 | -0.080 | 824,976 |
+| Hard seed 1 | -14.21 | -0.053 | 51.54 | -0.053 | 857,870 |
+| Hard seed 2 | **+32.56** | **+0.563** | 44.36 | +0.565 | 1,325,620 |
+| Soft seed 0 | +3.01 | +0.262 | 57.17 | +0.267 | 1,030,143 |
+| Soft seed 1 | **+59.88** | **+0.735** | 54.40 | +0.737 | 1,598,805 |
+| Soft seed 2 | — pending finisher `run_moe_bf_seed2.pbs` — | | | | |
+
+### 8b — Interim A3 read (pending Soft seed 2)
+
+1. **Soft > Hard on Sharpe/Return/Sortino survives the batch fix** (0.50 vs
+   0.14 Sharpe), and — the strongest part — **Hard's seed-instability
+   persists**: 2 of 3 seeds collapsed to negative Sharpe even under the
+   corrected mechanics at 1000 epochs. Within A2C-family training, discrete
+   routing remains fragile; this is no longer attributable to the
+   sliding-window bug.
+2. **Soft's Max Drawdown advantage is GONE** (Hard 48.9% vs Soft 55.8%,
+   direction reversed vs the old Table I where MaxDD was Soft's most
+   significant win at p=0.004). Both variants run much hotter under
+   corrected mechanics — same pattern as PPO (§5), where drawdown also
+   flipped to Hard. The old drawdown claim must be dropped from the paper
+   regardless of how seed 2 lands.
+3. Consistent cross-algorithm story forming: (a) Soft's risk-adjusted-return
+   advantage is robust under A2C-family training but collapses under PPO's
+   trust region; (b) Soft's drawdown advantage was an artifact of the old
+   mechanics everywhere; (c) Hard is seed-unstable under all A2C variants,
+   stable under PPO; (d) Router worst everywhere (§2, §5).
+4. No statistics until seed 2 lands (n=2 vs 3 paired tests are meaningless).
+
+---
+
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
 
 - LR = 3e-5, L2 coef = 0.01, advantage normalization enabled, epochs = 700

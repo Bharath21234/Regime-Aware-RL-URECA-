@@ -1,0 +1,37 @@
+#!/bin/bash
+#PBS -N URC_moe_kreg
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=40:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_moe_kreg.out
+#PBS -e URC_moe_kreg.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# K-regime ablation for Soft RA-RL (ICAIF): retrain with K=2 and K=3 HMM
+# states / expert heads, everything else identical to the K=4 flagship
+# (single-period protocol, mv reward, 1000 epochs, 3 seeds, batchfix
+# mechanics). Motivated by the BIC sweep (figures/hmm_state_selection.py):
+# K=4 beats K=5 on BIC and larger K only wins via degenerate <1%-occupancy
+# states; K=2 (coarse control) and K=3 (the paper's own "3-tier separation"
+# observation) are the informative end-to-end comparisons.
+#
+# K is threaded via the N_REGIMES env var (read at main_moe.py import).
+# Output dirs: results/moe_k2/ and results/moe_k3/ (via --tag), never
+# touching the K=4 results/moe*.
+#
+# Cost: 2 configs x 3 seeds x 1000 epochs at the MEASURED ~5-7h/seed-run
+# (job 3709637 timing) => ~33-40h. 40h requested after 3709637 overran 30h.
+
+N_REGIMES=2 python -u run.py --variant moe --seeds 3 --reward_mode mv \
+    --epochs 1000 --tag k2
+
+N_REGIMES=3 python -u run.py --variant moe --seeds 3 --reward_mode mv \
+    --epochs 1000 --tag k3

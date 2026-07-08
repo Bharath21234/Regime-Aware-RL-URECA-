@@ -1,5 +1,5 @@
 """
-Portfolio Allocation via A2C — Hard Regime Routing
+Portfolio Allocation via PPO — Hard Regime Routing
 4 specialist heads; the HMM's predicted next-regime index activates one exclusively.
 
 State  : flatten(cov_matrix [N×N] | tech_indicators [4×N]) + [regime_label]
@@ -7,8 +7,12 @@ State  : flatten(cov_matrix [N×N] | tech_indicators [4×N]) + [regime_label]
 Gating : hard argmax — x[:, -1].long() selects which head fires
 Reward : mean-variance penalised return − turnover penalty − concentration penalty
 
-Controlled ablation: identical env/reward/training to Baseline and Select_3.
-Only the appended state signal and head-selection mechanism differ.
+Identical environment, reward, and actor/critic architecture to the A2C
+version in 3_Agent_Select_1/Finrlmain.py. ONLY the training algorithm differs
+(PPO clipped-surrogate, multi-epoch minibatch updates over a full-episode
+rollout, vs A2C's single-pass sliding-window update) — this isolates the
+effect of the RL algorithm itself, holding architecture/environment/reward
+fixed, for a direct side-by-side comparison.
 """
 
 import os
@@ -54,6 +58,7 @@ def enforce_portfolio_constraints(weights):
 
 # ============================================================================
 # Environment — flat state + ONE scalar regime label at the end
+# (IDENTICAL to the A2C version — only the trainer differs)
 # ============================================================================
 class HardRegimePortfolioEnv(gym.Env):
     """
@@ -288,6 +293,7 @@ env_test  = HardRegimePortfolioEnv(
 
 # ============================================================================
 # Actor — 4 specialist heads, hard-routed by x[:, -1]
+# (IDENTICAL architecture to the A2C version)
 # ============================================================================
 class Actor(nn.Module):
     """
@@ -331,123 +337,33 @@ class Critic(nn.Module):
         return self.net(x).squeeze(-1)
 
 # ============================================================================
-# A2C Training — slide-by-1 rolling buffer (IDENTICAL to Baseline and Select_3)
+# SAC Training — full-episode on-policy rollout, GAE-lambda advantages,
+# K-epoch clipped-surrogate minibatch updates.
+#
+# Differs from train_a2c only in HOW the policy is updated from collected
+# experience: A2C does one gradient step per 20-step sliding window; PPO
+# collects one full episode under the frozen policy, computes GAE once over
+# the whole episode, then performs `ppo_epochs` passes of minibatch SGD with
+# a clipped importance-ratio objective (Schulman et al. 2017) bounding how
+# far the policy can move from the data-collecting policy in one update.
 # ============================================================================
-def train_a2c(env, epochs=1000, gamma=0.99, lr=1e-4,
-              value_coef=0.5, entropy_coef=0.01, batch_size=20, gae_lambda=0.95,
-              l2_coef=float(os.environ.get('L2_COEF', '0.5'))):
+def train(env, epochs=300):
+    """SAC training — delegates to the shared trainer in SAC/sac_core.py.
+    Identical env/reward/trunk architecture to the A2C and SAC versions;
+    only the algorithm differs (off-policy, twin-Q, auto-alpha, squashed
+    Gaussian). Default 300 epochs: SAC reuses transitions via the replay
+    buffer, so it needs fewer passes than on-policy A2C/PPO (1000);
+    calibrate before full runs.
+    """
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from sac_core import train_sac
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
+    trunk = Actor(obs_dim, act_dim).to(DEVICE)
+    return train_sac(env, trunk, epochs=epochs, device=DEVICE, tag="HARD-SAC")
 
-    actor  = Actor(obs_dim, act_dim).to(DEVICE)
-    critic = Critic(obs_dim).to(DEVICE)
-    opt    = optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()), lr=lr
-    )
-    # Linear LR decay to 10% of the initial rate over the full training run.
-    scheduler = optim.lr_scheduler.LinearLR(
-        opt, start_factor=1.0, end_factor=0.1, total_iters=epochs
-    )
-    history = []
-
-    for ep in range(epochs):
-        state, _ = env.reset()
-        done = False
-        ep_reward = 0.0
-        s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
-
-        while not done:
-            s_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-
-            with torch.no_grad():
-                mean, std = actor(s_t)
-                w_raw = torch.distributions.Normal(
-                    mean.cpu(), std.cpu()
-                ).sample().to(DEVICE)
-
-            next_state, reward, done, _, _ = env.step(w_raw.cpu().numpy()[0])
-
-            s_buf.append(s_t)
-            w_buf.append(w_raw)
-            r_buf.append(reward)
-            m_buf.append(1.0 - float(done))
-            mean_buf.append(mean)
-            state = next_state
-            ep_reward += reward
-
-            if len(r_buf) >= batch_size:
-                bs = torch.cat(s_buf)
-                bw = torch.cat(w_buf)
-                br = torch.tensor(r_buf, dtype=torch.float32, device=DEVICE)
-                bm = torch.tensor(m_buf, dtype=torch.float32, device=DEVICE)
-
-                mean_b, std_b = actor(bs)
-                vals          = critic(bs).squeeze()
-                dist_b        = torch.distributions.Normal(mean_b, std_b)
-                lp            = dist_b.log_prob(bw).sum(-1)
-                ent           = dist_b.entropy().sum(-1)
-
-                with torch.no_grad():
-                    ns_t = torch.tensor(
-                        next_state, dtype=torch.float32
-                    ).unsqueeze(0).to(DEVICE)
-                    nv = (critic(ns_t).squeeze()
-                          if not done
-                          else torch.zeros(1, device=DEVICE))
-
-                # ---- Generalized Advantage Estimation (GAE-lambda), truncated
-                # to this sliding window; bootstrapped with nv at the boundary ----
-                with torch.no_grad():
-                    vals_d    = vals.detach()
-                    next_vals = torch.cat([vals_d[1:], nv.reshape(1)])
-                    deltas    = br + gamma * next_vals * bm - vals_d
-                    adv_raw   = torch.zeros_like(deltas)
-                    gae       = torch.zeros((), device=DEVICE)
-                    for i in reversed(range(len(deltas))):
-                        gae = deltas[i] + gamma * gae_lambda * bm[i] * gae
-                        adv_raw[i] = gae
-                    value_target = adv_raw + vals_d
-
-                value_loss = (value_target - vals).pow(2).mean()
-                adv_norm   = (adv_raw - adv_raw.mean()) / (adv_raw.std() + 1e-8)
-
-                loss = (
-                    -(lp * adv_norm).mean()
-                    + value_coef   * value_loss
-                    - entropy_coef * ent.mean()
-                    + l2_coef * (mean_b ** 2).mean()   # L2 penalty on raw logits (env var L2_COEF, default 0.5)
-                )
-
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    list(actor.parameters()) + list(critic.parameters()), 0.5
-                )
-                opt.step()
-
-                # Non-overlapping batches: clear rather than slide-by-1. The
-                # previous stride-1 sliding window produced ~1743 highly
-                # correlated, overlapping gradient updates per single episode
-                # (1763-step train set), which is the leading hypothesis for
-                # Hard Routing's early-peak-then-degrade pattern observed
-                # under the full 1000-epoch budget (see results_log.md §4c).
-                for buf in (s_buf, w_buf, r_buf, m_buf, mean_buf):
-                    buf.clear()
-
-            if done:
-                s_buf, w_buf, r_buf, m_buf, mean_buf = [], [], [], [], []
-
-        scheduler.step()
-        history.append(ep_reward)
-        if ep % 10 == 0:
-            print(f"[Hard] Ep {ep:04d} | Reward: {ep_reward:.4f}")
-
-    return actor, critic, history
-
-# ============================================================================
-# Plotting helpers
-# ============================================================================
-def plot_training_progress(rewards, path='results/hard_training.png'):
+def plot_training_progress(rewards, path='results/hard_sac_training.png'):
     import matplotlib.pyplot as plt
     os.makedirs('results', exist_ok=True)
     plt.figure(figsize=(10, 5))
@@ -456,7 +372,7 @@ def plot_training_progress(rewards, path='results/hard_training.png'):
         plt.plot(pd.Series(rewards).rolling(20).mean(), lw=2, label='20-ep MA')
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
-    plt.title('A2C Training — Hard Regime Routing')
+    plt.title('SAC Training — Hard Regime Routing')
     plt.legend()
     plt.grid(alpha=0.3)
     plt.savefig(path, dpi=150, bbox_inches='tight')
@@ -464,7 +380,7 @@ def plot_training_progress(rewards, path='results/hard_training.png'):
     print(f"Saved {path}")
 
 
-def plot_wealth_over_time(env, initial, path='results/hard_wealth.png'):
+def plot_wealth_over_time(env, initial, path='results/hard_sac_wealth.png'):
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
     os.makedirs('results', exist_ok=True)
@@ -483,7 +399,7 @@ def plot_wealth_over_time(env, initial, path='results/hard_wealth.png'):
         mticker.FuncFormatter(lambda x, _: f'${x:,.0f}')
     )
     axes[0].set_ylabel('Portfolio Value (USD)')
-    axes[0].set_title('Hard Routing Wealth (Out-of-Sample)')
+    axes[0].set_title('Hard Routing (PPO) Wealth (Out-of-Sample)')
     axes[0].legend()
     axes[0].grid(alpha=0.3)
 
@@ -555,8 +471,6 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
       Panel 2 — Rolling Annualised Sharpe Ratio   (rolling_window-day)
       Panel 3 — Running Maximum Drawdown (%)
       Panel 4 — Rolling Annualised Sortino Ratio  (rolling_window-day)
-
-    Does NOT replace any existing plot; saved to a separate file.
     """
     import matplotlib.pyplot as plt
     os.makedirs('results', exist_ok=True)
@@ -565,22 +479,17 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
     values      = np.array(asset_memory)                  # length N+1
     plot_dates  = list(dates)[:len(values)]               # length N+1
 
-    # ── 1. Cumulative return (%) ─────────────────────────────────────────
     cum_return = (values / initial_amount - 1) * 100      # length N+1
 
-    # ── 2. Rolling annualised Sharpe ──────────────────────────────────────
     ret_s       = pd.Series(returns_arr)
     roll_mean   = ret_s.rolling(rolling_window).mean()
     roll_std    = ret_s.rolling(rolling_window).std() + 1e-8
     roll_sharpe = (roll_mean / roll_std) * np.sqrt(252)
-    # Prepend NaN so length matches values (N → N+1)
     roll_sharpe_full = np.concatenate([[np.nan], roll_sharpe.values])
 
-    # ── 3. Running maximum drawdown (%) ──────────────────────────────────
     peak     = np.maximum.accumulate(values)
     drawdown = (peak - values) / (peak + 1e-8) * 100      # length N+1, positive = loss
 
-    # ── 4. Rolling annualised Sortino ─────────────────────────────────────
     def _rolling_sortino(arr, w):
         out = np.full(len(arr), np.nan)
         for i in range(w - 1, len(arr)):
@@ -595,14 +504,12 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
         [[np.nan], _rolling_sortino(returns_arr, rolling_window)]
     )
 
-    # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(4, 1, figsize=(14, 18), sharex=True)
     fig.suptitle(
         f"{title_prefix} — Performance Metrics Over Time (Out-of-Sample Test)",
         fontsize=13, fontweight='bold'
     )
 
-    # Panel 1: Cumulative return
     ax = axes[0]
     ax.plot(plot_dates, cum_return, color='steelblue', lw=1.5)
     ax.fill_between(plot_dates, 0, cum_return,
@@ -614,7 +521,6 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
     ax.set_title('Cumulative Return (%)', fontsize=10, fontweight='bold')
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # Panel 2: Rolling Sharpe
     ax = axes[1]
     ax.plot(plot_dates, roll_sharpe_full, color='purple', lw=1.5,
             label=f'{rolling_window}-day rolling')
@@ -625,7 +531,6 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
                  fontsize=10, fontweight='bold')
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # Panel 3: Running max drawdown (plotted as negative so valleys go down)
     ax = axes[2]
     ax.fill_between(plot_dates, 0, -drawdown,
                     color='red', alpha=0.35, label='Drawdown depth')
@@ -635,7 +540,6 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
                  fontsize=10, fontweight='bold')
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # Panel 4: Rolling Sortino
     ax = axes[3]
     ax.plot(plot_dates, roll_sortino_full, color='darkorange', lw=1.5,
             label=f'{rolling_window}-day rolling')
@@ -657,9 +561,9 @@ def plot_metrics_over_time(portfolio_return_memory, asset_memory, dates,
 # ============================================================================
 # run_experiment — callable by multi-seed runner or standalone
 # ============================================================================
-def run_experiment(seed: int = 0, out_dir: str = "results/hard",
+def run_experiment(seed: int = 0, out_dir: str = "results/hard_sac",
                     reward_mode: str = 'mv', dsr_eta: float = 0.01,
-                    epochs: int = 1000) -> dict:
+                    epochs: int = 300) -> dict:
     """
     One full train + evaluate cycle for a given random seed.
 
@@ -679,11 +583,11 @@ def run_experiment(seed: int = 0, out_dir: str = "results/hard",
     env_test.dsr_eta = dsr_eta
 
     # ── Train ─────────────────────────────────────────────────────────────
-    actor, critic, rewards = train_a2c(env_train, epochs=epochs)
+    actor, critic, rewards = train(env_train, epochs=epochs)
     plot_training_progress(rewards, path=f"{out_dir}/seed_{seed}_training.png")
 
     # ── Greedy evaluation ─────────────────────────────────────────────────
-    print("\n[Evaluating Hard-Routing on Test Set (Out-of-Sample)...]")
+    print("\n[Evaluating Hard-Routing (PPO) on Test Set (Out-of-Sample)...]")
     state, _ = env_test.reset()
     done = False
     all_weights, final_weights = [], None
@@ -708,7 +612,7 @@ def run_experiment(seed: int = 0, out_dir: str = "results/hard",
     plot_metrics_over_time(
         env_test.portfolio_return_memory, env_test.asset_memory,
         env_test.date_memory, INITIAL_AMOUNT,
-        title_prefix=f"Hard Routing (Select_1) — Seed {seed}",
+        title_prefix=f"Hard Routing PPO (Select_1) — Seed {seed}",
         save_path=f"{out_dir}/seed_{seed}_metrics_over_time.png",
         rolling_window=20,
     )
@@ -722,18 +626,17 @@ def run_experiment(seed: int = 0, out_dir: str = "results/hard",
 if __name__ == "__main__":
     results = run_experiment(seed=0)
 
-    # Additional standalone-only outputs
     plot_wealth_over_time(env_test, INITIAL_AMOUNT)
 
     print("=" * 60)
-    print("HARD ROUTING OUT-OF-SAMPLE RESULTS")
+    print("HARD ROUTING (PPO) OUT-OF-SAMPLE RESULTS")
     print("=" * 60)
     print(f"Final Portfolio Value : ${env_test.portfolio_value:,.2f}")
     print(f"Total Return          : {(env_test.portfolio_value / INITIAL_AMOUNT - 1) * 100:.2f}%")
     ret_df = pd.DataFrame(env_test.portfolio_return_memory, columns=['ret'])
     sharpe = (252 ** 0.5) * ret_df['ret'].mean() / (ret_df['ret'].std() + 1e-8)
     print(f"Sharpe Ratio          : {sharpe:.4f}")
-    print("\nCOMPREHENSIVE PERFORMANCE METRICS (Hard Routing)")
+    print("\nCOMPREHENSIVE PERFORMANCE METRICS (Hard Routing, PPO)")
     print("-" * 44)
     for k, v in results.items():
         if k not in ('seed', 'rewards'):

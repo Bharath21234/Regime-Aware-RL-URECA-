@@ -58,7 +58,7 @@ def save_json(data: dict, path: str):
 # Per-variant runner
 # ---------------------------------------------------------------------------
 
-def run_variant(variant: str, n_seeds: int, reward_mode: str = 'mv', dsr_eta: float = 0.01,
+def run_variant(variant: str, n_seeds: int, seed_start: int = 0, reward_mode: str = 'mv', dsr_eta: float = 0.01,
                  epochs: int | None = None, calib_tag: str = '') -> tuple:
     """
     Import the variant module (triggers data download + HMM fit once),
@@ -107,9 +107,9 @@ def run_variant(variant: str, n_seeds: int, reward_mode: str = 'mv', dsr_eta: fl
     os.makedirs(out_root, exist_ok=True)
     summary_rows = []
 
-    for seed in range(n_seeds):
+    for seed in range(seed_start, seed_start + n_seeds):
         print(f"\n{'='*60}")
-        print(f"  {variant.upper()} | seed {seed} / {n_seeds - 1} | reward_mode={reward_mode}")
+        print(f"  {variant.upper()} | seed {seed} / {seed_start + n_seeds - 1} | reward_mode={reward_mode}")
         print(f"{'='*60}")
 
         # Seed both frameworks before calling run_experiment
@@ -260,6 +260,17 @@ if __name__ == '__main__':
         '--calib', action='store_true',
         help="Tag output dir with '_calib' so a quick test run never collides with real results."
     )
+    parser.add_argument(
+        '--seed_start', type=int, default=0,
+        help='First seed to run (runs seed_start ... seed_start+seeds-1). Use to '
+             'finish an interrupted multi-seed job without recomputing done seeds. '
+             'NOTE: summary/aggregate JSONs are rewritten from only this invocation.'
+    )
+    parser.add_argument(
+        '--tag', type=str, default='',
+        help="Arbitrary suffix for the output dir (e.g. 'k2' -> results/moe_k2). "
+             "Overrides --calib if both are given."
+    )
     args = parser.parse_args()
 
     if args.variant == 'both':
@@ -272,8 +283,9 @@ if __name__ == '__main__':
     # ── Run all variants ──────────────────────────────────────────────────
     collected = {}          # variant → {'rows': [...], 'stats': {...}}
     for v in variants:
-        rows, out_root    = run_variant(v, args.seeds, reward_mode=args.reward_mode, dsr_eta=args.dsr_eta,
-                                         epochs=args.epochs, calib_tag='calib' if args.calib else '')
+        rows, out_root    = run_variant(v, args.seeds, seed_start=args.seed_start, reward_mode=args.reward_mode, dsr_eta=args.dsr_eta,
+                                         epochs=args.epochs,
+                                         calib_tag=args.tag or ('calib' if args.calib else ''))
         stats             = print_aggregate(v, rows)
         collected[v]      = {'rows': rows, 'stats': stats}
         # Save aggregate stats JSON next to the per-seed files (same dir run_variant wrote to)

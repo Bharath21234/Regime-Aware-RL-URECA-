@@ -105,17 +105,13 @@ class ProbabilisticHMM:
 
 def plot_regime_probs(prob_df, save_path='results/regime_probabilities.png'):
     os.makedirs('results', exist_ok=True)
-    prob_cols = sorted(c for c in prob_df.columns if c.startswith('regime_p_'))
-    K = len(prob_cols)
-    if K == 4:
-        labels = ['Bear', 'Sideways Down', 'Sideways Up', 'Bull']
-    else:
-        labels = ['Bear'] + [f'State {i}' for i in range(1, K - 1)] + ['Bull']
-    colors = plt.cm.RdYlGn(np.linspace(0.08, 0.92, K))
     plt.figure(figsize=(15, 6))
-    plt.stackplot(prob_df['date'], *[prob_df[c] for c in prob_cols],
-                  labels=labels, colors=colors, alpha=0.6)
-    plt.title(f'Market Regime Probabilities (HMM, {K} states)')
+    plt.stackplot(prob_df['date'], 
+                  prob_df['regime_p_0'], prob_df['regime_p_1'], 
+                  prob_df['regime_p_2'], prob_df['regime_p_3'],
+                  labels=['Bear', 'Sideways Down', 'Sideways Up', 'Bull'],
+                  colors=['#e74c3c', '#f39c12', '#f1c40f', '#2ecc71'], alpha=0.6)
+    plt.title('Market Regime Probabilities (HMM)')
     plt.legend(loc='upper left')
     plt.savefig(save_path)
     plt.close()

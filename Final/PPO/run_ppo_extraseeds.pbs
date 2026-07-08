@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N URC_PPO_xseed
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=32:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_PPO_xseed.out
+#PBS -e URC_PPO_xseed.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/PPO
+
+# Extra PPO seeds 3-5 for Soft (moe) and Learned Router, extending the n=3
+# runs of jobs 3689517/3689530 to n=6 per arm. Purpose: the replicated
+# Router-instability contrast (results_log.md section 5b: Soft-vs-Router
+# p1 = 0.11-0.14 at n=3) plausibly reaches significance at n=6 -- this is
+# the paper's strongest algorithm-robust claim, worth the power.
+#
+# --seed_start 3 ADDS seed_3/4/5.json alongside the existing seed_0-2 files
+# in results/moe_ppo/ and results/router_ppo/ without recomputing them.
+# NOTE: summary.json / aggregate_stats.json are rewritten from only seeds
+# 3-5 by this job; pooled n=6 stats must be computed from the per-seed
+# JSONs (analysis side), not read from those files.
+#
+# Cost: soft ~4h/seed, router ~4.9h/seed => 3*(4+4.9) ~ 27h.
+
+python -u run_ppo.py --variant moe    --seeds 3 --seed_start 3 --reward_mode mv
+python -u run_ppo.py --variant router --seeds 3 --seed_start 3 --reward_mode mv
