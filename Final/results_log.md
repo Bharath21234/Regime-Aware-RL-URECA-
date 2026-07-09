@@ -792,31 +792,33 @@ flight-to-quality; 1970s-style rate bears are scarce in ETF-era data).
 
 ---
 
-## 8. Corrected single-period Hard-vs-Soft (batchfix mechanics) — PARTIAL
+## 8. Corrected single-period Hard-vs-Soft (batchfix mechanics) — COMPLETE
 
-**Status: 5/6 seeds complete** — job 3709637 (`URC_RL_mv_gae_bf`, 30h
-request) was killed by the walltime limit **90 seconds over budget**
-(108090s vs 108000s), mid-way through MoE seed 2. Completed and saved:
-Hard seeds 0-2, MoE seeds 0-1. Finisher for MoE seed 2 queued
-(`run_moe_bf_seed2.pbs`, 10h, needs the `--seed_start` run.py update
-pulled on the cluster first). Local copies in `results/hard_bf/`,
-`results/moe_bf/` — **stale leftovers quarantined** (`hard_bf/seed_3`,
-`moe_bf/seed_2` were pre-batchfix files from the shared cluster dirs;
-verified against job logs before removal to `stale_prev_run/`).
+**Status: COMPLETE (6/6 seeds, 2026-07-08)** — job 3709637
+(`URC_RL_mv_gae_bf`, 30h request) was killed by the walltime limit **90
+seconds over budget** (108090s vs 108000s), mid-way through MoE seed 2
+(Hard seeds 0-2 and MoE seeds 0-1 completed and saved). The missing MoE
+seed 2 was completed by finisher job **3714204** (`run_moe_bf_seed2.pbs`
+via `--seed_start 2`): Exit Status 0, walltime 3h44m of 10h (node
+hpc-tl-gpu2 — much faster than the ~6-7h/seed measured on the original
+job's node). Local copies in `results/hard_bf/`, `results/moe_bf/` —
+**stale leftovers quarantined** (`hard_bf/seed_3`, `moe_bf/seed_2` were
+pre-batchfix files from the shared cluster dirs; verified against job
+logs before removal to `stale_prev_run/`).
 
 Timing lesson: ~5h/Hard-seed, ~6-7h/MoE-seed at 1000 epochs under the new
 mechanics — substantially slower than the 3.9h/seed extrapolated from the
 300-epoch Hard calibration. `run_moe_kregimes.pbs` bumped 30→40h and
 `run_hard_l2match.pbs` 16→20h accordingly.
 
-### 8a — Partial results (single-period, 1000 epochs, batchfix mechanics)
+### 8a — Final results (single-period, 1000 epochs, batchfix mechanics)
 
-| Metric | Hard (n=3) | Soft (n=2, PARTIAL) |
+| Metric | Hard (n=3) | Soft (n=3) |
 |---|---|---|
-| Return (%) | +0.28 ± 28.00 | +31.45 ± 40.21 |
-| Sharpe | +0.142 ± 0.364 | +0.498 ± 0.335 |
-| Max Drawdown (%) | 48.87 ± 3.93 | 55.79 ± 1.96 |
-| Sortino | +0.144 ± 0.364 | +0.502 ± 0.333 |
+| Return (%) | +0.28 ± 28.00 | +26.24 ± 29.83 |
+| Sharpe | +0.142 ± 0.364 | +0.462 ± 0.245 |
+| Max Drawdown (%) | 48.87 ± 3.93 | 57.23 ± 2.86 |
+| Sortino | +0.144 ± 0.364 | +0.469 ± 0.242 |
 
 Per-seed raw values (from the scp'd `results/hard_bf/`, `results/moe_bf/`
 seed JSONs; each 500 trading days, $1M start):
@@ -828,28 +830,105 @@ seed JSONs; each 500 trading days, $1M start):
 | Hard seed 2 | **+32.56** | **+0.563** | 44.36 | +0.565 | 1,325,620 |
 | Soft seed 0 | +3.01 | +0.262 | 57.17 | +0.267 | 1,030,143 |
 | Soft seed 1 | **+59.88** | **+0.735** | 54.40 | +0.737 | 1,598,805 |
-| Soft seed 2 | — pending finisher `run_moe_bf_seed2.pbs` — | | | | |
+| Soft seed 2 | +15.82 | +0.390 | 60.12 | +0.403 | 1,158,160 |
 
-### 8b — Interim A3 read (pending Soft seed 2)
+### 8a' — Paired seed-matched tests (n=3 pairs, one-tailed in claimed direction)
 
-1. **Soft > Hard on Sharpe/Return/Sortino survives the batch fix** (0.50 vs
-   0.14 Sharpe), and — the strongest part — **Hard's seed-instability
-   persists**: 2 of 3 seeds collapsed to negative Sharpe even under the
-   corrected mechanics at 1000 epochs. Within A2C-family training, discrete
+| Metric | mean diff (Soft−Hard) | paired t | t p₁ | Wilcoxon p₁ |
+|---|---|---|---|---|
+| Return (%) | +25.96 | +0.98 | 0.214 | 0.250 |
+| Sharpe | +0.320 | +1.15 | 0.184 | 0.250 |
+| Max DD (%) | +8.36 (Soft WORSE) | +2.17 | 0.919 | 1.000 |
+| Sortino | +0.325 | +1.18 | 0.179 | 0.250 |
+
+Nothing significant at n=3 (Wilcoxon's floor at n=3 is 0.125). MaxDD's t
+in the OPPOSITE direction (Hard better) would be p₁=0.081 — a trend
+against the old claim. Note the seed-2 pair is Hard's win (Sharpe 0.563
+vs 0.390): Soft wins 2/3 pairs on Sharpe/Return/Sortino, 0/3 on MaxDD.
+
+### 8b — Final A3 read (2026-07-08)
+
+1. **Soft > Hard on Sharpe/Return/Sortino survives the batch fix in
+   direction and effect size** (Sharpe 0.46 vs 0.14, Return +26% vs +0.3%)
+   but is NOT significant at n=3 (paired p₁≈0.18) — the old pooled n=9
+   significance came from old-mechanics campaigns and cannot be claimed
+   for the corrected mechanics without more seeds. **Hard's
+   seed-instability persists**: 2 of 3 Hard seeds collapsed to negative
+   Sharpe while all 3 Soft seeds are positive, and Soft's dispersion is
+   smaller on every ratio metric. Within A2C-family training, discrete
    routing remains fragile; this is no longer attributable to the
    sliding-window bug.
-2. **Soft's Max Drawdown advantage is GONE** (Hard 48.9% vs Soft 55.8%,
-   direction reversed vs the old Table I where MaxDD was Soft's most
-   significant win at p=0.004). Both variants run much hotter under
-   corrected mechanics — same pattern as PPO (§5), where drawdown also
-   flipped to Hard. The old drawdown claim must be dropped from the paper
-   regardless of how seed 2 lands.
-3. Consistent cross-algorithm story forming: (a) Soft's risk-adjusted-return
-   advantage is robust under A2C-family training but collapses under PPO's
-   trust region; (b) Soft's drawdown advantage was an artifact of the old
-   mechanics everywhere; (c) Hard is seed-unstable under all A2C variants,
-   stable under PPO; (d) Router worst everywhere (§2, §5).
-4. No statistics until seed 2 lands (n=2 vs 3 paired tests are meaningless).
+2. **Soft's Max Drawdown advantage is definitively GONE** (Hard 48.9% vs
+   Soft 57.2%, reversed in all 3 seed-pairs; opposite-direction trend
+   p₁=0.081). The old Table I MaxDD claim (p=0.0025 paired) is a
+   mechanics artifact — same reversal as PPO (§5). Dropped from the
+   paper; now the §5.6 "mechanics artifact" cautionary result in the
+   ICAIF draft.
+3. Consistent cross-algorithm story, now final: (a) Soft's
+   risk-adjusted-return advantage is directionally robust under corrected
+   A2C but statistically a tie under PPO; (b) Soft's drawdown advantage
+   was an artifact of the old mechanics everywhere; (c) Hard is
+   seed-unstable under all A2C variants, stable under PPO; (d) Router
+   worst and least stable everywhere (§2, §5).
+4. **Gated-EW cross-check under corrected mechanics**: Soft's mean Sharpe
+   0.462 still exceeds plain single-period EW (0.410, §7c) but only 1 of
+   3 seeds individually beats it (0.735; 0.262 and 0.390 do not) — the
+   "Soft beats 1/N on the single-period protocol" sentence must be
+   hedged to mean-level and seed-dependent.
+5. If more budget arrives, the highest-value spend for THIS table is +3
+   more seed-pairs (≈2×4h×3 ≈ 24 walltime-hours) to give the corrected
+   comparison the same n=6 power the PPO arm is getting — decide after
+   the walk-forward lands.
+
+---
+
+## 9. SAC calibration — Kaggle free-tier run (2026-07-09)
+
+**Status: PIPELINE PASS / LEARNING-SIGNAL FLAG.** Run on Kaggle (Tesla T4,
+free tier) via `SAC/kaggle_sac_calib.ipynb` v2 (with the finrl shim — v1
+failed on `ModuleNotFoundError: finrl`). All 8 unit tests passed on GPU.
+Hard variant, 1 seed, 50 epochs, mv reward, `--calib` tag. Results copied
+to `sac_calib_results/` (repo root, untracked).
+
+| Metric | SAC Hard, seed 0, 50 epochs (T4) |
+|---|---|
+| Total Return (%) | +11.36 |
+| Annualised Sharpe | +0.386 |
+| Max Drawdown (%) | **23.60** |
+| Sortino | +0.387 |
+
+Reads (updated after the Kaggle log arrived — ROOT CAUSE FOUND & FIXED):
+1. **End-to-end pipeline works off-cluster** (data via yfinance+stockstats
+   shim, HMM fit, replay-buffer training, greedy eval, plots).
+2. **⚠⚠ Auto-alpha DIVERGED**: log shows alpha 1.0 → 74.5 (ep10) → 14,733
+   (ep20) → 2.9e6 (ep30) → **5.7e8 (ep40)**. Root cause: target_entropy
+   was the textbook -act_dim = -38, but the policy's log-probs include the
+   affine tanh→[-0.05,0.20] Jacobian (38·log 0.125 ≈ -79), so the MAXIMUM
+   achievable entropy on the action box is 38·log 0.25 ≈ -52.7 < -38. The
+   target was unreachable ⇒ the temperature controller raised alpha
+   without bound ⇒ the actor optimised entropy only ⇒ near-uniform
+   allocations.
+3. **The "decent" eval was the policy dissolving into 1/N**: SAC eval
+   (Return 11.36%, Sharpe 0.386, MaxDD 23.6%) ≈ single-period plain EW
+   (12.64%, 0.410, §7c). SAC learned nothing; it mimicked equal weight.
+   Flat training reward (20-ep MA ≈ -750..-800 throughout) consistent.
+4. **FIX applied to sac_core.py** (2026-07-09): target_entropy =
+   act_dim·(log(half_span) − 1) — the standard −dim(A) target expressed in
+   tanh-space (≈ -117 for 38 assets), always achievable. Unit tests pass
+   (stub act_dim=6 → -18.5, alpha stable at ~1.0 over 3 epochs).
+   **Needs commit+push before the Kaggle rerun** (notebook clones GitHub).
+5. Timing (T4, free tier): 50 epochs = **0.74 h → 0.9 min/epoch → ~4.5 h
+   per 300-epoch seed** ⇒ a 3-seed variant ≈ 13.5 h ≈ half a Kaggle weekly
+   quota (30 h/wk); all three variants ≈ 40 h ≈ 1.3 weeks. SAC full runs
+   are Kaggle-viable without cluster budget.
+6. Environment caveat: shim preprocessing ≈ finrl but not byte-identical;
+   SAC numbers from Kaggle are NOT comparable against cluster A2C/PPO
+   tables — cluster re-run required if SAC enters the paper.
+7. Bonus finding for the paper's themes: this is ANOTHER case of a
+   training-mechanics/config artifact producing a superficially plausible
+   result (a "conservative low-drawdown SAC agent" that was actually 1/N)
+   — caught only because the calibration protocol demanded a healthy
+   learning signal, not just good eval metrics.
 
 ---
 

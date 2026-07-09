@@ -149,8 +149,19 @@ def train_sac(env, trunk, epochs=300, device="cpu", tag="SAC",
     pi_opt = optim.Adam(actor.parameters(), lr=lr)
     q_opt = optim.Adam(list(q1.parameters()) + list(q2.parameters()), lr=lr)
 
-    # automatic temperature
-    target_entropy = -float(act_dim)
+    # automatic temperature.
+    # Target entropy must live in the same units as the policy's log-probs,
+    # which include the affine tanh->[lo,hi] Jacobian: a constant
+    # act_dim*log(half_span) (~ -79 for 38 assets at half_span 0.125).
+    # The naive -act_dim target sits ABOVE the maximum entropy achievable on
+    # the action box (act_dim*log(2*half_span) ~ -52.7), which made alpha
+    # diverge (1 -> 5.7e8 in 40 epochs, Kaggle calib 2026-07-09) and
+    # collapsed the policy to entropy-only near-uniform allocations.
+    # -act_dim + act_dim*log(half_span) is the standard -dim(A) target
+    # expressed in tanh-space, and is always achievable.
+    target_entropy = float(act_dim) * (float(np.log(actor.half_span)) - 1.0)
+    print(f"[SAC] target_entropy = {target_entropy:.1f} "
+          f"(act_dim={act_dim}, half_span={actor.half_span})")
     log_alpha = torch.zeros(1, requires_grad=True, device=device)
     a_opt = optim.Adam([log_alpha], lr=lr)
 

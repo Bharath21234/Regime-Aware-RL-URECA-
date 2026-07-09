@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N URC_moe_k3
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=20:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_moe_k3.out
+#PBS -e URC_moe_k3.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# K-regime ablation, K=3 HALF (split from run_moe_kregimes.pbs so each half
+# fits a 75-unit budget hold at the measured 3.75 units/walltime-hour).
+# Soft RA-RL retrained with a 3-state HMM / 3 expert heads, everything else
+# identical to the K=4 flagship (single-period, mv reward, 1000 epochs,
+# 3 seeds, batchfix mechanics). See run_moe_kregimes.pbs for the full
+# motivation (BIC sweep). K=2 half: run_moe_k2.pbs.
+#
+# TIP: before submitting, check K=2's actual per-seed time in URC_moe_k2.out;
+# if it ran ~4h/seed, trimming this request to 16:00:00 cuts the hold from
+# 75 to 60 units.
+#
+# K is threaded via the N_REGIMES env var (read at main_moe.py import).
+# Output dir: results/moe_k3/ (via --tag), never touching results/moe*.
+
+N_REGIMES=3 python -u run.py --variant moe --seeds 3 --reward_mode mv \
+    --epochs 1000 --tag k3

@@ -63,8 +63,10 @@ Status: [ ] open · [x] done
 - [ ] D1. Update Tables I/II/III numbers; regenerate
       `figures/make_results_plots.py` + equity-curve figure with corrected data
 - [ ] D2. Write ICAIF Results + Discussion around whichever narrative A3 selected
-- [ ] D3. ICAIF skeleton: ACM sigconf 2-col, 8 pages incl. references,
-      double-blind (can start before jobs finish)
+- [x] D3. ICAIF skeleton: ACM sigconf 2-col, 8 pages incl. references,
+      double-blind — DONE 2026-07-06, in `ICAIF_paper/` (main.tex +
+      references.bib + README with compile/checklist); all pending numbers
+      marked with an orange `\pending{}` macro
 - [ ] D4. Anonymization: byline, acknowledgments, "Following Istiaque, Pun,
       and Yong" phrasing (supervisor fingerprint), PDF metadata
 - [ ] D5. ICAIF-venue citations pass (2-3 recent ICAIF regime/RL papers)
