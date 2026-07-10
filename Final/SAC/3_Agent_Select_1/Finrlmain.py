@@ -608,6 +608,17 @@ def run_experiment(seed: int = 0, out_dir: str = "results/hard_sac",
     metrics['seed']    = seed
     metrics['rewards'] = rewards
 
+    # ── Daily test series (idea #16): enables JK-Memmel / deflated-Sharpe
+    # and direct EW-similarity checks without re-running the seed. ────────
+    import json as _json
+    daily = {
+        "dates":   [str(d) for d in env_test.date_memory[1:len(env_test.asset_memory)]],
+        "returns": [float(r) for r in env_test.portfolio_return_memory],
+        "weights": [[float(x) for x in w] for w in all_weights],
+    }
+    with open(f"{out_dir}/seed_{seed}_daily.json", "w") as fh:
+        _json.dump(daily, fh)
+
     # ── Metrics-over-time 4-panel figure ─────────────────────────────────
     plot_metrics_over_time(
         env_test.portfolio_return_memory, env_test.asset_memory,

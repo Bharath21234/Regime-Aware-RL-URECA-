@@ -284,18 +284,30 @@ def run_experiment(seed: int = 0, out_dir: str = "results/router_sac",
     print("\n[Evaluating Learned-Router (PPO) agent on Test Set (Out-of-Sample)...]")
     state, _ = env_test.reset()
     done = False
+    all_weights = []
     actor.eval()
     with torch.no_grad():
         while not done:
             s_tensor    = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
             mean, _     = actor(s_tensor)
             weights_raw = mean.detach().cpu().numpy()[0]
-            enforce_portfolio_constraints(weights_raw)
+            all_weights.append(enforce_portfolio_constraints(weights_raw))
             state, _, done, _, _ = env_test.step(weights_raw)
 
     metrics = compute_metrics(env_test.portfolio_return_memory, env_test.asset_memory, 1_000_000)
     metrics['seed']    = seed
     metrics['rewards'] = rewards
+
+    # ── Daily test series (idea #16): enables JK-Memmel / deflated-Sharpe
+    # and direct EW-similarity checks without re-running the seed. ────────
+    import json as _json
+    daily = {
+        "dates":   [str(d) for d in env_test.unique_dates[1:len(env_test.asset_memory)]],
+        "returns": [float(r) for r in env_test.portfolio_return_memory],
+        "weights": [[float(x) for x in w] for w in all_weights],
+    }
+    with open(f"{out_dir}/seed_{seed}_daily.json", "w") as fh:
+        _json.dump(daily, fh)
 
     date_memory = list(env_test.unique_dates[:len(env_test.asset_memory)])
     plot_metrics_over_time(

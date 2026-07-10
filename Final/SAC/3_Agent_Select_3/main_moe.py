@@ -368,7 +368,7 @@ def run_experiment(seed: int = 0, out_dir: str = "results/moe_sac",
     print("\n[Evaluating MoE (PPO) trained agent on Test Set (Out-of-Sample)...]")
     state, _ = env_test.reset()
     done = False
-    final_weights = None
+    all_weights, final_weights = [], None
     actor.eval()
     with torch.no_grad():
         while not done:
@@ -376,6 +376,7 @@ def run_experiment(seed: int = 0, out_dir: str = "results/moe_sac",
             mean, _ = actor(s_tensor)
             weights_raw = mean.detach().cpu().numpy()[0]
             final_weights = enforce_portfolio_constraints(weights_raw)
+            all_weights.append(final_weights)
             state, _, done, _, _ = env_test.step(weights_raw)
 
     metrics = compute_metrics(
@@ -383,6 +384,17 @@ def run_experiment(seed: int = 0, out_dir: str = "results/moe_sac",
     )
     metrics['seed']    = seed
     metrics['rewards'] = rewards
+
+    # ── Daily test series (idea #16): enables JK-Memmel / deflated-Sharpe
+    # and direct EW-similarity checks without re-running the seed. ────────
+    import json as _json
+    daily = {
+        "dates":   [str(d) for d in env_test.unique_dates[1:len(env_test.asset_memory)]],
+        "returns": [float(r) for r in env_test.portfolio_return_memory],
+        "weights": [[float(x) for x in w] for w in all_weights],
+    }
+    with open(f"{out_dir}/seed_{seed}_daily.json", "w") as fh:
+        _json.dump(daily, fh)
 
     date_memory = list(env_test.unique_dates[:len(env_test.asset_memory)])
     plot_metrics_over_time(
