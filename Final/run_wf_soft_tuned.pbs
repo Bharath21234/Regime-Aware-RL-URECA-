@@ -1,0 +1,41 @@
+#!/bin/bash
+#PBS -N wf_soft_tuned
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=26:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o wf_soft_tuned.out
+#PBS -e wf_soft_tuned.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final/Walkforward
+
+# Hyperparameter-parity check for the corrected walk-forward null
+# (results_log 10f item 4): the main run (results_batchfix_2seed) trained
+# ALL variants at train_a2c's shared defaults lr=1e-4 / l2_coef=0.5 --
+# but Soft's tuned single-period config is lr=3e-5 / l2=0.01. This job
+# re-runs ONLY the Soft arm at its tuned hyperparameters, same seeds,
+# same 300-epoch budget, same everything else (requires the --soft_lr /
+# --soft_l2 run_walkforward.py patch -- git pull first).
+#
+# Interpretation is symmetric and pre-committed:
+#   - Soft@tuned ~ Soft@shared (~1.1)  -> the wf null is robust to
+#     hyperparameters; report with confidence.
+#   - Soft@tuned >> Soft@shared        -> the wf Soft number was a
+#     mistuning artifact; report BOTH numbers and re-scope 10d.
+# Either way the result goes in the paper -- this is a parity check,
+# not a retry-until-favourable.
+#
+# Cost: measured Soft arm = 21.1h (8 windows x 2 seeds x 300 epochs,
+# per_run_metrics elapsed_s). Baselines are deterministic and cheap.
+# 26h requested. Fresh out_dir REQUIRED (window-level caching).
+
+python -u run_walkforward.py --seeds 2 --epochs 300 --reward_mode mv \
+    --skip_variants baseline,hard,lstm \
+    --soft_lr 3e-5 --soft_l2 0.01 \
+    --out_dir results_soft_tuned --verbose

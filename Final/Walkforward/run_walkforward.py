@@ -49,6 +49,12 @@ from baselines import NON_RL_BASELINES, INITIAL_AMOUNT
 
 DEVICE = _device_select()
 
+# Per-variant hyperparameter overrides for the Soft arm, set from CLI
+# (--soft_lr / --soft_l2). None => train_a2c defaults (lr=1e-4, l2=0.5),
+# i.e. the shared-hyperparameter protocol used by the main corrected run.
+SOFT_LR = None
+SOFT_L2 = None
+
 
 # =============================================================================
 # Metrics (same definitions as the existing code)
@@ -118,10 +124,22 @@ def _run_rl_variant(window: dict, variant: str, seed: int,
     else:
         raise ValueError(variant)
 
+    # Per-variant hyperparameter overrides (results_log 10f item 4: the
+    # original wf trained ALL variants at train_a2c's defaults lr=1e-4 /
+    # l2_coef=0.5, i.e. Soft ran off its tuned single-period config
+    # lr=3e-5 / l2=0.01). None => keep the shared defaults.
+    hyper_kwargs = {}
+    if variant == "soft":
+        if SOFT_LR is not None:
+            hyper_kwargs["lr"] = SOFT_LR
+        if SOFT_L2 is not None:
+            hyper_kwargs["l2_coef"] = SOFT_L2
+
     actor, _, history = train_a2c(
         train_env, variant, num_assets=n_assets,
         base_dim=base_dim, seq_len=seq_len,
         epochs=epochs, device=DEVICE, verbose=verbose,
+        **hyper_kwargs,
     )
     rollout = evaluate_actor_greedy(actor, test_env, device=DEVICE)
 
@@ -416,12 +434,21 @@ if __name__ == "__main__":
                               "LSTM-Context costs ~3.7x the per-epoch time of the other "
                               "three variants due to its recurrent layer; dropping it "
                               "roughly halves total walltime.")
+    parser.add_argument("--soft_lr", type=float, default=None,
+                         help="Learning-rate override for the Soft arm only (e.g. 3e-5, "
+                              "its tuned single-period value). Default: shared lr=1e-4.")
+    parser.add_argument("--soft_l2", type=float, default=None,
+                         help="L2 mean-penalty override for the Soft arm only (e.g. 0.01). "
+                              "Default: shared l2_coef=0.5.")
     args = parser.parse_args()
     skip_variants = tuple(v.strip() for v in args.skip_variants.split(",") if v.strip())
+    SOFT_LR = args.soft_lr
+    SOFT_L2 = args.soft_l2
 
     os.makedirs(args.out_dir, exist_ok=True)
     print(f"\n[Walkforward]   device={DEVICE}   seeds={args.seeds}   epochs={args.epochs}   "
-          f"reward_mode={args.reward_mode}   skip_variants={skip_variants or 'none'}")
+          f"reward_mode={args.reward_mode}   skip_variants={skip_variants or 'none'}   "
+          f"soft_lr={SOFT_LR or 'shared'}   soft_l2={SOFT_L2 or 'shared'}")
     print(f"               running {args.windows}/{len(WALK_FORWARD_WINDOWS)} windows")
 
     all_rows = []

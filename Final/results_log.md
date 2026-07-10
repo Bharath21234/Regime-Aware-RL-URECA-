@@ -930,6 +930,214 @@ Reads (updated after the Kaggle log arrived — ROOT CAUSE FOUND & FIXED):
    — caught only because the calibration protocol demanded a healthy
    learning signal, not just good eval metrics.
 
+### 9b — Calibration v2 with the target-entropy fix (Kaggle, 2026-07-09)
+
+**Status: FIX CONFIRMED — learning signal healthy; test transfer poor at
+50 epochs.** Same protocol (Hard, seed 0, 50 epochs, mv, T4).
+
+| Metric | v1 (broken alpha) | v2 (fixed) |
+|---|---|---|
+| Train reward, 20-ep MA | flat ≈ -750..-800 | **-500 → +10,000, monotonic, still rising at ep 50** |
+| Total Return (%) | +11.36 (fake: ≈EW) | -10.54 |
+| Annualised Sharpe | +0.386 (fake: ≈EW) | -0.081 |
+| Max Drawdown (%) | 23.60 | 34.49 |
+| Sortino | +0.387 | -0.081 |
+
+Reads:
+1. **The entropy-target fix works**: strong monotonic train-reward growth
+   replaces the flat entropy-only collapse. SAC training is now
+   mechanically sound.
+2. **Train-test divergence at 50 epochs**: the agent exploits the
+   2015-2021 train distribution hard while test (2022-2024) Sharpe is
+   negative. Notably, Hard-SAC seed 0 (-0.081) lands almost exactly on
+   corrected Hard-A2C seed 0 (-0.083) — a tease that discrete routing's
+   test-period fragility may replicate under an off-policy algorithm,
+   but n=1 at a calibration budget; do not overread.
+3. **Update-count accounting matters for the full-run budget**: SAC at
+   updates_per_step=1 does ~1,750 grad updates/epoch → 50 epochs ≈ 87k
+   updates ≈ PPO's ENTIRE 300-epoch budget (~81k). The default 300-epoch
+   SAC run would be ~6x PPO's update budget. Full-suite budget should be
+   chosen by TRAIN-side reward plateau (not test performance — that would
+   overfit the test set): next step is one 300-epoch seed (~4.5h, free)
+   to locate the plateau, then fix the suite budget at/past it.
+4. Decision: full 3x3 SAC suite is GO on Kaggle quota once the plateau
+   budget is known. Cluster re-run still required if SAC enters the paper
+   (shim/env caveat, 9.6).
+
+### 9c — Plateau run: Hard, seed 0, 300 epochs (Kaggle, 2026-07-09)
+
+**Status: budget question answered.** Train reward: smooth monotonic
+-500 → ~28,500; decelerating after ~ep 150 and near-plateau by ep
+250-300 (end slope a few % of mid-run slope). No instability, no
+divergence — the fixed auto-alpha is healthy over 525k gradient updates.
+
+| Epochs | Return (%) | Sharpe | MaxDD (%) | Sortino |
+|---|---|---|---|---|
+| 50 (9b) | -10.54 | -0.081 | 34.49 | -0.081 |
+| 300 | **+14.31** | **+0.378** | **27.29** | +0.396 |
+
+Reads:
+1. **More training improved TEST performance** (Sharpe -0.08 → +0.38) —
+   the 50-epoch dip was undertraining, not overfitting. Train-side
+   near-plateau at 300 epochs makes **300 epochs the defensible suite
+   budget** (chosen on the train criterion, not test peeking).
+2. Context: Hard-SAC seed 0 (0.378, MaxDD 27.3%) vs Hard-A2C seed 0
+   (-0.083, 50.7%) and Hard-PPO seed 0 (0.886, 31.2%), single-period EW
+   0.410. n=1 — no conclusions, but discrete routing looks mid-pack
+   under SAC's twin-Q + entropy regularisation rather than collapsed.
+3. ⚠ Watch-item for the suite: eval Sharpe ≈ EW again (0.378 vs 0.410).
+   Unlike v1 this sits on a genuinely learned policy (train reward 28.5k
+   vs v1's -800), but the runs don't save actions/weights, so
+   EW-similarity can't be ruled out directly. Idea #16 (save daily
+   returns + weights) would settle it; consider patching before the
+   suite so all 9 runs record daily test returns.
+4. Update-budget note for any paper text: SAC@300ep ≈ 525k updates ≈
+   6.5x PPO's full budget — report as "trained to train-reward plateau",
+   not "same epochs".
+5. Suite logistics (T4, ~4.5h/seed): 9 runs of `--seeds 1 --seed_start N`
+   fit Kaggle's 12h sessions and ~30h/wk quota in ~1.5 weeks. SAC stays
+   OUT of the ICAIF main tables (env caveat + scope); it's follow-up /
+   journal-version material.
+
+---
+
+## 10. Corrected Walk-Forward (batchfix mechanics, 2 seeds/window) — COMPLETE
+
+**Status: COMPLETE** — job 3714203 (`wf_bf_2seed`), Exit Status 0,
+finished 2026-07-10 02:23 after resuming from the W1-W4 cache. 8 windows
+× 2 seeds × {Baseline, Hard, Soft}, 300 epochs, mv reward, per-window HMM
+refit, corrected non-overlapping-batch mechanics. Results in
+`Walkforward/results_batchfix_2seed/`, pulled 2026-07-10. **Supersedes §3
+(old mechanics, 1 seed) and §6 (GAE + sliding-window, invalidated).**
+
+### 10a — Aggregate (mean across 8 windows, seed-averaged within window)
+
+| Method | Sharpe | Return % | MaxDD % | Sortino |
+|---|---|---|---|---|
+| Equal-Weight | **1.645** | 11.56 | **12.63** | 1.656 |
+| Markowitz MVO | 1.130 | 12.15 | 16.02 | 1.221 |
+| S&P 500 B&H | 1.104 | 6.39 | 13.69 | 1.097 |
+| **Baseline (no gate)** | **1.270** | **18.50** | 21.97 | 1.342 |
+| Hard Routing | 1.265 | 15.32 | 19.08 | 1.328 |
+| Soft MoE (ours) | 1.105 | 13.66 | 18.58 | 1.171 |
+
+### 10b — Per-window Sharpe (seed-averaged)
+
+| W | EW | MVO | SPY | Baseline | Hard | Soft |
+|---|---|---|---|---|---|---|
+| W1 COVID | 0.33 | 1.15 | 0.03 | 1.11 | 1.12 | 0.68 |
+| W2 | 3.18 | 0.96 | 2.43 | 2.51 | 2.34 | 2.23 |
+| W3 | 3.10 | 0.33 | 2.45 | 1.76 | 1.94 | 2.20 |
+| W4 | 2.03 | 3.25 | 1.72 | 1.80 | 2.59 | 1.73 |
+| W5 bear | -1.47 | -1.53 | -1.72 | -2.17 | -1.98 | -2.53 |
+| W6 | 0.92 | -0.06 | 0.22 | 0.50 | 0.95 | 0.98 |
+| W7 | 2.87 | 3.39 | 2.32 | 3.26 | 2.01 | 2.27 |
+| W8 | 2.20 | 1.55 | 1.38 | 1.39 | 1.14 | 1.29 |
+
+### 10c — Statistics
+
+- Wilcoxon (n=8 windows): **no RL-vs-RL comparison remotely significant**
+  (all p ≥ 0.55). Only EW vs SPY significant (p=0.0078, the n=8 floor);
+  EW vs Soft p=0.0547.
+- JK-Memmel on 998-day seed-averaged daily returns: Soft 0.766 vs Hard
+  0.877 (z=-0.55, p=0.58); Soft vs Baseline 0.889 (z=-0.60, p=0.55);
+  Hard vs Baseline z=-0.06 p=0.95; Soft vs EW 1.006 (z=-0.83, p=0.40).
+  Nothing significant at daily granularity either.
+- Transition-day decomposition (±2-day buffer, 150/300 transition days):
+  every method's Sharpe collapses on transition days (stable ≈ +1.2..1.6
+  vs transition ≈ -0.9..-2.0, within-method Welch p<0.05 for most).
+  Ordering on transition days: **Hard -0.87 (least bad)** > EW -1.41 >
+  MVO -1.56 > Soft -1.57 > SPY -1.88 > Baseline -2.03. Between-method
+  significance on transition days NOT yet tested (follow-up if used in
+  the paper).
+
+### 10d — Key findings (all three prior walk-forward claims FLIP)
+
+1. **The regime gate adds nothing in the walk-forward protocol**:
+   Baseline (no gate) 1.270 ≈ Hard 1.265 > Soft 1.105, all statistically
+   indistinguishable. The old ranking (Soft best RL variant, Baseline
+   crippled at 0.348) was a training-mechanics artifact — correcting the
+   update scheme helped the BASELINE most of all (0.35 → 1.27).
+2. **The COVID-window story is dead**: old = Soft 1.00 vs Hard 0.05 vs
+   Baseline -0.44 ("regime-awareness matters most in the crash"). New =
+   Baseline 1.11 ≈ Hard 1.12 > Soft 0.68. Under sound mechanics every
+   variant, gated or not, weathers W1 — and Soft is the laggard.
+   The paper's flagship stress-test claim cannot be made.
+3. **Hard's W6 spike (2.83) is gone too** (now 0.95 ≈ Soft's 0.98) —
+   that anomaly was also mechanics-borne.
+4. **Coherent mechanistic synthesis with §8 (single-period)**: where the
+   policy is trained ONCE on 7y and must survive an unseen bear+recovery
+   (single-period), soft regime-gating shows a large (if n=3-underpowered)
+   advantage and Hard is unstable. Where the policy is RETRAINED every 6
+   months on an expanding window (walk-forward), regime conditioning adds
+   nothing — **frequent retraining substitutes for regime awareness**.
+   This protocol-dependence is arguably the paper's most honest and most
+   interesting positive statement about when regime-aware architecture
+   pays.
+5. Transition-day nuance: Hard's discrete switch is nominally least-bad
+   on transition days under corrected mechanics — the OPPOSITE direction
+   of the old paper's claim (soft blending smoother at transitions).
+   Untested between methods; treat as descriptive only.
+6. **1/N still wins the walk-forward** (1.645, lowest drawdown), as
+   before — the only statistically significant aggregate fact in the
+   protocol.
+
+### 10f — Deep-dive: code + math audit of why Soft doesn't win (2026-07-10)
+
+Facts established by reading the implementation and measuring the gate:
+
+1. **Architecture math.** All wf actors share a 2-layer 256-unit trunk;
+   specialisation is ONLY in the final linear head(s):
+   Baseline mean = 0.1·W·h(x); Hard = 0.1·W_z·h(x) (z = MAP label);
+   Soft = 0.1·(Σ_k p_k W_k)·h(x). Since heads are linear over SHARED
+   features, Soft is exactly a bilinear model — the gate can only express
+   regime-differences that are linear in the shared features. Expressivity
+   of specialisation is one linear map per regime.
+2. **Gradient flow.** ∂loss/∂W_k ∝ p_k ⇒ each head's effective learning
+   rate is its regime's occupancy. W5 train: occupancy (Bear→Bull) =
+   [0.50, 0.25, 0.03, 0.22] — the Sideways-Up head gets 3% of gradient
+   mass.
+3. **The gate is near-one-hot**: measured on W1/W5 fits, mean max-prob
+   0.97, >0.99 on 78-85% of days, <0.6 on <2%. So Soft ≈ Hard except on
+   ~15-20% of days around transitions — consistent with their wf tie.
+4. **⚠ Hyperparameter discovery: the wf trains ALL variants at lr=1e-4,
+   L2=0.5** (train_a2c defaults; no per-variant override in
+   run_walkforward). Soft's tuned settings (single-period) are lr=3e-5,
+   L2=0.01. The wf is therefore hyperparameter-CONTROLLED (good: no
+   Soft-favouring confound) but Soft runs 3.3x hotter and 50x more
+   L2-shrunk than its tuned config — its wf number may be depressed.
+   The queued soft-epochs job tests budget only, NOT lr/L2.
+5. **⚠ Mild lookahead in the regime signal**: split_window predicts
+   posteriors via hmmlearn predict_proba over the FULL train+test
+   sequence — forward-BACKWARD smoothing, so test-day gates use future
+   observations. Measured smoothed-vs-causal divergence on test days
+   (W1/W5): mean L1 0.08-0.13, MAP-label flips on 4-8% of days, max L1
+   1.45 near transitions. Small, and it FAVOURS the gated variants —
+   so the wf null holds a fortiori — but it must be disclosed and
+   ideally fixed (filtered/forward-only posteriors). The single-period
+   pipeline likely shares the pattern (verify hmm_probabilistic.py).
+6. **W5 smoking gun — regime-semantics mismatch**: the W5 HMM (trained
+   2015-2021) assigns the H1-2022 bear 0% to its "Bear" state and ~80%
+   to "Sideways-Down": the 2022 rate-driven grind is statistically
+   unlike the COVID-style crash the model learned as "Bear"
+   (momentum-vol signature differs). The gate routes the one crisis
+   window in the protocol to a mid-occupancy sideways specialist; Soft
+   posts its single worst number there (-2.53, worst of ALL methods).
+   Independently corroborates §7d's bear-type finding: a 4-state
+   momentum-vol HMM cannot distinguish crash-bears from rate-bears.
+
+### 10e — Consequences for the ICAIF paper
+
+- §5.4 (walk-forward) is now a NEGATIVE/boundary-condition section — and
+  the mechanics-artifact section gains its third and most sweeping flip
+  (drawdown claim, walk-forward ranking incl. Baseline, COVID story).
+- The paper's positive claims now rest on: (a) Router collapse (A2C+PPO,
+  algorithm-robust); (b) single-period Soft>Hard effect size + stability
+  (needs more seeds for significance); (c) gated-EW rule baseline ("the
+  signal isn't directly monetizable"); (d) the retraining-substitutes-
+  for-regime-awareness synthesis.
+- Do NOT reuse the old walkforward_sharpe.png anywhere.
+
 ---
 
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
