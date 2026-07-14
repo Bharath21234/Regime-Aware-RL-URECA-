@@ -1140,6 +1140,140 @@ Facts established by reading the implementation and measuring the gate:
 
 ---
 
+## 11. L2-matched control: Hard @ L2=0.01 (single-period, corrected mechanics) — COMPLETE
+
+**Status: COMPLETE** — job 3716394 (`URC_hard_l2m`), Exit Status 0,
+walltime 19h30m of 20h (30-minute margin!). `L2_COEF=0.01 run.py
+--variant hard --tag l2match`, 3 seeds, 1000 epochs, mv, corrected
+mechanics — identical to §8's Hard run except the L2 mean-penalty
+matched to Soft's 0.01 instead of Hard's usual 0.5. Env-var effect
+verified: same seeds produce entirely different results than §8.
+Results in `results/hard_l2match/`.
+
+### 11a — The confound was REAL: the gap closes
+
+| Metric | Hard@0.5 (§8) | **Hard@0.01 (new)** | Soft@0.01 (§8) |
+|---|---|---|---|
+| Return (%) | +0.28 ± 28.00 | **+20.57 ± 27.74** | +26.24 ± 29.83 |
+| Sharpe | 0.142 ± 0.364 | **0.422 ± 0.282** | 0.462 ± 0.245 |
+| Max DD (%) | 48.87 ± 3.93 | 51.37 ± 10.21 | 57.23 ± 2.86 |
+| Sortino | 0.144 ± 0.364 | **0.422 ± 0.283** | 0.469 ± 0.242 |
+
+Per-seed Sharpe — Hard@0.01: +0.688, +0.452, +0.126 (ALL positive).
+Paired Soft-vs-Hard@0.01: Sharpe t=+0.17 p₁=0.44; Return p₁=0.42;
+Sortino p₁=0.43; MaxDD p₁=0.79 (Soft worse). **Statistical dead heat on
+every metric.** Seed pairs split 2-1 for Soft with one big Hard win
+(seed 0: 0.688 vs 0.262).
+
+### 11b — Key findings
+
+1. **The single-period Soft-vs-Hard gap was substantially the L2
+   asymmetry, not the gating architecture.** At matched regularisation,
+   Sharpe 0.462 vs 0.422 — a tie. The paper's Limitation #4 turns out
+   to be the explanation, not a caveat.
+2. **Hard's "seed instability" was also L2-driven**: at 0.01 no seed
+   collapses (min Sharpe +0.126), vs 2/3 negative at 0.5. The §8
+   stability contrast (all-Soft-positive vs Hard-collapsing) does not
+   survive the control.
+3. Interaction quirk: lowering L2 flips WHICH seed is good (seed 2 was
+   Hard@0.5's only good seed, 0.563 → 0.126; seeds 0/1 went from
+   negative to strongly positive). Consistent with high seed-noise and
+   regularisation-dependent basins, not a stable architecture effect.
+4. Cross-algorithm coherence: this matches PPO (§5), where at shared
+   hyperparameters Soft-vs-Hard was already a tie. Under BOTH
+   algorithms, with mechanics corrected and hyperparameters matched,
+   **hard vs soft gating is a wash**.
+5. **⚠ CRITICAL GAP EXPOSED: no corrected-mechanics single-period
+   BASELINE (no gate) exists** — run.py never had a baseline variant.
+   With Soft≈Hard established, the paper's remaining architectural
+   question is whether EITHER gated variant beats a no-gate baseline on
+   the protocol where gating is supposed to pay (train-once,
+   generalise-across-regimes). §10 answered "no" for walk-forward;
+   single-period is now the decisive open experiment. Same applies to
+   Router under corrected A2C (its A2C collapse is old-mechanics; only
+   the PPO replication is corrected-era).
+6. Next compute, in order: corrected single-period BASELINE (3 seeds,
+   ~16h ≈ 60 units — fits current balance), then Router (same, after
+   refunds). Requires wiring Singular_Agent into run.py (--variant
+   baseline).
+
+---
+
+## 12. Walk-forward hyperparameter-parity check: Soft @ tuned hypers — COMPLETE (W1–W7)
+
+**Status: COMPLETE for W1–W7; W8 lost to walltime.** Job `wf_soft_tuned`
+(26h wall): re-ran ONLY the Soft arm of the corrected walk-forward at
+Soft's tuned single-period config (lr 3e-5, L2 0.01) instead of the
+shared defaults (lr 1e-4, L2 0.5) used in §10 — same 2 seeds, 300
+epochs, everything else identical. Expanding windows meant cumulative
+training hit 23.2h by end of W7 (W7 alone 4.48h); the wall killed it
+mid-W8 (would have needed ~28.5h total). W8 is re-runnable alone via the
+per-window cache (~5h train ≈ 19–23 units) but is not needed for the
+conclusion. Results in `Walkforward/results_soft_tuned/`.
+
+### 12a — Result: tuned hypers made walk-forward WORSE
+
+Per-window Sharpe (seed-avg), W1–W7, vs §10 arms on the same windows:
+
+| Win | Soft@tuned | Soft@shared | Δ | Baseline | Hard | EW |
+|---|---|---|---|---|---|---|
+| W1 COVID | 0.587 | 0.675 | −0.088 | 1.109 | 1.121 | 0.325 |
+| W2 | 2.497 | 2.231 | +0.267 | 2.513 | 2.343 | 3.176 |
+| W3 | 0.936 | 2.205 | −1.269 | 1.762 | 1.936 | 3.103 |
+| W4 | 1.749 | 1.725 | +0.024 | 1.801 | 2.589 | 2.034 |
+| W5 bear | **−2.940** | −2.530 | −0.411 | −2.174 | −1.981 | −1.469 |
+| W6 | 0.412 | 0.983 | −0.571 | 0.497 | 0.952 | 0.920 |
+| W7 | 1.863 | 2.266 | −0.404 | 3.263 | 2.015 | 2.870 |
+| **Mean** | **0.729** | **1.079** | **−0.350** | 1.253 | 1.282 | 1.566 |
+
+Paired on 7 windows: tuned-vs-shared mean Δ −0.350 (t p=0.11, Wilcoxon
+p=0.11, n.s. but one-directional: worse in 5/7); tuned-vs-Baseline
+−0.524 (t p=0.036, Wilcoxon p=0.016 — tuned Soft is now SIGNIFICANTLY
+worse than no-gate); tuned-vs-EW −0.837 (p≈0.03). Concatenated daily
+returns (873 obs, seed-avg): Sharpe tuned 0.412 / shared 0.739 /
+Baseline 0.843; JK-Memmel tuned-vs-shared z=−1.48 p=0.14,
+tuned-vs-baseline z=−1.79 p=0.074.
+
+W5 (2022 bear onset) is a blow-up: both seeds ≈ −52/−53% return,
+MDD ≈ 55%, Sharpe −2.6/−3.3 — far worse than every other method
+(EW −16.9%). Low L2 (0.01 vs 0.5) permits much more concentrated
+positions; in the window where the HMM's bear-type mismatch is worst
+(§10f-3: 2022 assigned ~0% to "Bear"), concentration is punished
+hardest. Per-seed spread elsewhere is also wider (W1: 1.09 vs 0.08;
+W7: 1.08 vs 2.64) — same L2-basin noise as §11 finding 3.
+
+### 12b — Interpretation (pre-committed in the job header)
+
+The header committed to: tuned ≈ shared → null robust; tuned >> shared
+→ mistuning artifact, report both. Outcome is the STRONGER version of
+the first branch — tuned is directionally worse, so the §10 walk-forward
+null (Soft 1.105 < Baseline 1.270 < EW 1.645) was **not** a
+hyperparameter artifact. If anything the shared defaults flattered Soft.
+
+1. **§10f open item 4 is closed**: the walk-forward null survives
+   hyperparameter parity. Report the §10 numbers with confidence; cite
+   this run as the robustness check.
+2. **Tuned hypers are protocol-specific, not architecture-specific**:
+   lr 3e-5 / L2 0.01 was tuned on the single-period protocol (700–1000
+   epochs, one long train window). Under walk-forward's 300-epoch
+   budget, lr 3e-5 undertrains (⅓ the effective steps of lr 1e-4) and
+   L2 0.01 under-regularises short-window fits. This is itself a
+   paper-worthy observation: hyperparameters do not transfer across
+   evaluation protocols, reinforcing §10's "protocol dominates
+   architecture" synthesis.
+3. Paper actions: drop the L2/parity `\pending{}` in §5.4/Limitations —
+   replace with one sentence: "Re-running the soft arm at its tuned
+   single-period hyperparameters (lr 3e-5, L2 0.01) *reduced* mean
+   walk-forward Sharpe from 1.08 to 0.73 on the first seven windows,
+   with a −53% blow-up in the 2022 bear window; the walk-forward null
+   is robust to this choice." No new table needed (appendix row at
+   most).
+4. W8 finisher is OPTIONAL (~20 units); decision deferred until after
+   the single-period Baseline run — the W1–W7 evidence is already
+   directionally uniform.
+
+---
+
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
 
 - LR = 3e-5, L2 coef = 0.01, advantage normalization enabled, epochs = 700

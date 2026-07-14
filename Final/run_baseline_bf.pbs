@@ -1,0 +1,39 @@
+#!/bin/bash
+#PBS -N URC_base_bf
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=16:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_base_bf.out
+#PBS -e URC_base_bf.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# THE decisive missing arm (results_log 11b item 5): corrected-mechanics
+# single-period BASELINE (no gate). With Soft ~ Hard established at matched
+# L2 (sec 11), the paper's remaining architectural question is whether ANY
+# regime gate beats a no-gate policy on the train-once protocol.
+#
+# main_baseline.py = 3_Agent_Select_1/Finrlmain.py with the HMM replaced by
+# a constant regime column (state dims identical to Hard, zero regime
+# information) and a single un-routed head. Same corrected mechanics, same
+# reward, same seeds.
+#
+# L2_COEF=0.01 matches the setting at which BOTH gated variants post their
+# best numbers (sec 11) -- the conservative choice for a gating claim: if
+# gating still wins, it wins against the baseline's best-known config
+# family. (A 0.5 companion run can follow if this lands low.)
+#
+# Cost: 3 seeds x 1000 epochs at ~4-5h/seed => ~15h; 16h requested
+# (fits the 63-unit balance at 3.75/h = 60). If killed at the wall,
+# finish with --seed_start (run_moe_bf_seed2.pbs pattern).
+#
+# Requires git pull (main_baseline.py + run.py baseline variant).
+
+L2_COEF=0.01 python -u run.py --variant baseline --seeds 3 --reward_mode mv --epochs 1000

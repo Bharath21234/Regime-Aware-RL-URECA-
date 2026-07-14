@@ -96,8 +96,13 @@ def run_variant(variant: str, n_seeds: int, seed_start: int = 0, reward_mode: st
         out_root    = os.path.join(HERE, 'results', 'router')
         sys.path.insert(0, variant_dir)
         from main_router import run_experiment        # noqa: E402
+    elif variant == 'baseline':
+        variant_dir = os.path.join(HERE, 'Singular_Agent')
+        out_root    = os.path.join(HERE, 'results', 'baseline')
+        sys.path.insert(0, variant_dir)
+        from main_baseline import run_experiment      # noqa: E402
     else:
-        raise ValueError(f"Unknown variant '{variant}'. Choose 'hard', 'moe', or 'router'.")
+        raise ValueError(f"Unknown variant '{variant}'. Choose 'baseline', 'hard', 'moe', or 'router'.")
 
     if reward_mode == 'dsr':
         out_root = out_root + '_dsr'
@@ -239,7 +244,7 @@ if __name__ == '__main__':
         help='Number of random seeds (runs seed 0 … seeds-1). Default: 4.'
     )
     parser.add_argument(
-        '--variant', choices=['hard', 'moe', 'router', 'both', 'all'], default='both',
+        '--variant', choices=['baseline', 'hard', 'moe', 'router', 'both', 'all'], default='both',
         help="Which variant to run: 'hard', 'moe', 'router', 'both' (hard+moe), or 'all'. Default: both."
     )
     parser.add_argument(
