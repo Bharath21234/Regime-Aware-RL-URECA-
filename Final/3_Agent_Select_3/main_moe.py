@@ -12,7 +12,7 @@ from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
 from finrl.meta.preprocessor.preprocessors import FeatureEngineer
 
 from hmm_probabilistic import ProbabilisticHMM, plot_regime_probs
-from agents_moe import ActorMoE, Critic
+from agents_moe import ActorMoE, Critic, SOFT_V2
 from env_mixture import MixturePortfolioEnv, enforce_portfolio_constraints
 
 # --- Config ---
@@ -148,6 +148,15 @@ prob_df_test  = prob_df[(prob_df.date >= TEST_START)  & (prob_df.date <= TEST_EN
 print(f"DEBUG: train_df shape: {train_df.shape}")
 print(f"DEBUG: test_df shape:  {test_df.shape}")
 
+# Soft-v2: per-regime mean posterior mass on TRAIN ONLY, for the
+# inverse-occupancy gradient rescale (see agents_moe.py header).
+OCCUPANCY = None
+if SOFT_V2:
+    _prob_cols = [c for c in prob_df.columns if c.startswith('regime_p_')]
+    OCCUPANCY = prob_df_train[_prob_cols].mean().values
+    print(f"SOFT_V2 active: 2-layer heads + inverse-occupancy rescale. "
+          f"Train occupancy: {np.round(OCCUPANCY, 4)}")
+
 # Env Train
 env_train = MixturePortfolioEnv(
     df=train_df, 
@@ -177,7 +186,8 @@ def train(env, epochs=1000):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
-    actor = ActorMoE(obs_dim, act_dim, num_experts=N_REGIMES).to(DEVICE)
+    actor = ActorMoE(obs_dim, act_dim, num_experts=N_REGIMES,
+                     occupancy=OCCUPANCY).to(DEVICE)
     critic = Critic(obs_dim).to(DEVICE)
     optimizer = optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=3e-5

@@ -1274,6 +1274,34 @@ hyperparameter artifact. If anything the shared defaults flattered Soft.
 
 ---
 
+## 13. Soft-v2 remediation (2-layer heads + occupancy rescale) — QUEUED
+
+**Status: CODE READY, not yet run** (needs ~75 units or a rented A40 —
+see `run_softv2.pbs` and `cloud/vast_setup.sh`). Diagnosis-driven fix of
+the two cheapest mechanisms from the §10f audit, behind `SOFT_V2=1` in
+`agents_moe.py` (old results unaffected):
+
+1. **Two-layer expert heads** (hidden 64): Σₖ pₖWₖh = (ΣₖpₖWₖ)h — a blend
+   of linear heads IS one linear head, so K experts added no expressivity.
+   Nonlinear heads break that ceiling.
+2. **Inverse-occupancy gradient rescale** (straight-through, train-time
+   only, forward output unchanged): ∂loss/∂headₖ ∝ pₖ starves rare-regime
+   heads. Scale = mean(occ)/occₖ, capped at 20, computed on TRAIN only.
+
+Smoke test (1 epoch, local): both paths exercised, runs end-to-end.
+**Measured train occupancy [0.0253, 0.1935, 0.2752, 0.5061]** — the Bear
+head receives ~20× less gradient mass than the Bull head. This is the
+§10f "occupancy-starved heads" mechanism quantified; citable in the paper
+independent of how Soft-v2 scores.
+
+Pre-committed interpretation (also in run_softv2.pbs header): Soft-v2 >
+Soft(0.462±0.245) → remediation claim; Soft-v2 ≤ Soft → the obvious
+remedies don't rescue soft gating, audit strengthens. Reported either way.
+Config otherwise identical to §8 Soft: lr 3e-5, L2 0.01, mv, 1000 epochs,
+seeds 0–2.
+
+---
+
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
 
 - LR = 3e-5, L2 coef = 0.01, advantage normalization enabled, epochs = 700

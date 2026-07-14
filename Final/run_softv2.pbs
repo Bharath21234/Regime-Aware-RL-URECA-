@@ -1,0 +1,38 @@
+#!/bin/bash
+#PBS -N URC_softv2
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=20:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_softv2.out
+#PBS -e URC_softv2.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Soft-v2: diagnosis-driven remediation of the Soft MoE null (results_log
+# 10f/11/12). Two changes, both behind SOFT_V2=1 in agents_moe.py:
+#   1. Two-layer expert heads -- breaks the expressivity ceiling (a blend
+#      of linear heads is itself one linear map, so K linear heads add
+#      nothing a single head can't express).
+#   2. Inverse-occupancy gradient rescale (straight-through) -- stops
+#      rare-regime heads being trained ~occupancy-times slower.
+# Everything else identical to the corrected Soft run (sec 8): lr 3e-5,
+# L2 0.01, mv reward, 1000 epochs, seeds 0-2.
+#
+# Pre-committed symmetric interpretation:
+#   - Soft-v2 > Soft (0.462 +/- 0.245): the failure was the instantiation,
+#     not the idea -- positive remediation claim for the paper.
+#   - Soft-v2 ~ Soft or worse: the obvious remedies do not rescue soft
+#     gating -- the audit conclusion strengthens. Reported either way.
+#
+# Cost: ~6.5h/seed measured (sec 11) => ~19.5h; 20h = 75 units. Submit
+# only after the budget top-up (balance was 12.5 when this was written).
+# On a rented A40 instead: see cloud/vast_setup.sh.
+
+SOFT_V2=1 python -u run.py --variant moe --seeds 3 --reward_mode mv --epochs 1000 --tag softv2
