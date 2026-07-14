@@ -4,7 +4,7 @@
 #PBS -q gpu_a40
 #PBS -M BHARATH007@ntu.edu.sg
 #PBS -m abe
-#PBS -l walltime=16:00:00
+#PBS -l walltime=14:00:00
 #PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
 #PBS -o URC_base_bf.out
 #PBS -e URC_base_bf.err
@@ -30,10 +30,13 @@ cd /home/bharath007/Regime-Aware-RL-URECA-/Final
 # gating still wins, it wins against the baseline's best-known config
 # family. (A 0.5 companion run can follow if this lands low.)
 #
-# Cost: 3 seeds x 1000 epochs at ~4-5h/seed => ~15h; 16h requested
-# (fits the 63-unit balance at 3.75/h = 60). If killed at the wall,
-# finish with --seed_start (run_moe_bf_seed2.pbs pattern).
+# Cost: measured 6.5h/seed at 1000 epochs (sec 11 L2-match: 19h30m / 3
+# seeds), NOT the 4-5h originally assumed -- 3 seeds does not fit a
+# 65-unit balance (17.3h of compute). Default is therefore SEEDS=2
+# (seeds 0-1, ~13h) in 14h = 52.5 units; the budget hook rejected the
+# original 16h/60-unit request outright. Seed 2 finisher after top-up:
+#   qsub -P spms_cspun -l walltime=07:30:00 -v SEEDS=1,SEED_START=2 run_baseline_bf.pbs
 #
 # Requires git pull (main_baseline.py + run.py baseline variant).
 
-L2_COEF=0.01 python -u run.py --variant baseline --seeds 3 --reward_mode mv --epochs 1000
+L2_COEF=0.01 python -u run.py --variant baseline --seeds ${SEEDS:-2} --seed_start ${SEED_START:-0} --reward_mode mv --epochs 1000
