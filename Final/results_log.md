@@ -1302,6 +1302,60 @@ seeds 0–2.
 
 ---
 
+## 14. Corrected single-period BASELINE (no gate) — COMPLETE (seeds 0–1)
+
+**Status: COMPLETE** — job 3723116 (`URC_base_bf`), Exit 0, walltime
+11h57m of 14h (→ 5.97h/seed; ~7.7-unit refund expected). `L2_COEF=0.01
+run.py --variant baseline`, seeds 0–1, 1000 epochs, mv, corrected
+mechanics. Seed 2 pending compute (needs ≥6h walltime ≈ 22.5+ units or a
+rented A40 — commands in cloud/vast_setup.sh). Results in
+`results/baseline/`. This was the decisive missing control from §11b.
+
+### 14a — Result: all architectures land in the same band
+
+Single-period test (2022–2024), corrected mechanics, L2=0.01:
+
+| Arm | Sharpe (mean±std) | per-seed (s0, s1, s2) | Return % | MaxDD % |
+|---|---|---|---|---|
+| **Baseline (no gate)** | **0.402 ± 0.206 (n=2)** | 0.256, 0.548, — | 18.2 | 56.1 |
+| Hard @0.01 (§11) | 0.422 ± 0.282 (n=3) | 0.688, 0.452, 0.126 | 20.6 | 51.4 |
+| Soft (§8) | 0.462 ± 0.245 (n=3) | 0.262, 0.735, 0.390 | 26.2 | 57.2 |
+
+Paired deltas on shared seeds 0–1: Soft−Baseline = +0.006, +0.187
+(mean +0.096); Hard−Baseline = +0.432, −0.096 (mean +0.168, sign flips).
+Gaps are small fractions of the seed std; n=2 pairs carry no formal
+power. Seed-level ordering is not stable across architectures (each arm
+has a different best seed).
+
+### 14b — Verdict: the audit-paper branch
+
+The pre-committed fork (§11b item 5 / run_baseline_bf.pbs header) read:
+Baseline ≈0.2–0.3 → "gating helps generalisation" survives; Baseline
+≈0.45 → full audit paper. Measured 0.402 with per-seed spread 0.26–0.55:
+**within seed noise of both gated variants — no measurable gating
+benefit on the train-once protocol either.** Combined with §10
+(walk-forward: Baseline 1.27 ≈ Hard 1.27 > Soft 1.11, all < EW 1.65)
+and §11 (Hard ≈ Soft at matched L2):
+
+1. **Across two protocols, two algorithms, matched hyperparameters, and
+   a no-gate control, every RA-RL architecture lands in one statistical
+   band.** Single-period: 0.40 / 0.42 / 0.46. The regime gate — hard,
+   soft, or absent — does not measurably move performance.
+2. The tight clustering IS the headline: what moved results in this
+   system was mechanics (§4), regularisation (§11), hyperparameter-
+   protocol fit (§12), and evaluation protocol (§10) — never the
+   architecture. "The knobs that don't matter get the attention; the
+   knobs that matter get defaults."
+3. Paper is now the full audit. §5.1 claims ("soft dominates",
+   "hard unstable") must be rewritten; abstract/limitations updated;
+   the L2 \pending{} resolved. Soft-v2 (§13) becomes the remediation
+   arm: "do the obvious fixes rescue gating?"
+4. Caveats to state: Baseline n=2 (seed 2 pending); single-period
+   n≤3 throughout — report as descriptive with paired-delta support,
+   lean on the walk-forward (n=8 windows) for inference.
+
+---
+
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
 
 - LR = 3e-5, L2 coef = 0.01, advantage normalization enabled, epochs = 700
