@@ -47,29 +47,34 @@ switching}, which discretely selects one of four regime-specialist heads;
 and (iii) a \emph{learned router} trained end-to-end without consuming the
 posterior directly, against a regime-agnostic baseline, on 38 U.S. equities
 (2015--2024). We evaluate under two on-policy algorithms (A2C and PPO), with
-seed-paired statistics, an expanding 8-window walk-forward protocol, and
-Jobson--Korkie--Memmel tests on daily returns. Three findings survive every
-robustness pass. First, the learned router is the worst and least stable
-variant under \emph{both} algorithms, collapsing on a subset of seeds ---
-evidence that a stable, separately estimated regime signal beats jointly
-learned routing. Second, the gate's value is \emph{protocol-dependent}:
-trained once and tested across an unseen bear-plus-recovery, soft gating
-dominates hard switching in effect size and stability under A2C (Sharpe
-0.46 vs.\ 0.14; every soft seed positive while two of three hard seeds
-collapse) and ties under PPO's clipped objective (0.774 vs.\ 0.726) ---
-but in the walk-forward, where policies are retrained every six months
-on expanding data, no gated variant beats the no-gate baseline:
-\emph{frequent retraining substitutes for regime awareness}. Third, a
-hand-crafted HMM-gated equal-weight rule \emph{destroys} value (Sharpe
-0.41 $\rightarrow$ 0.16) --- the signal is not directly monetizable; any
-value emerges only through learned exploitation. Finally, a cautionary
-methodological result: a sliding-window update scheme had manufactured
-an internally consistent, significant pro-gating narrative --- a
-drawdown advantage at $p{=}0.0025$, a walk-forward ranking, and a
-COVID-crash stress-test story --- all of which reversed or dissolved
-under corrected non-overlapping batches. Architectural comparisons in RL
-finance can be artifacts of training mechanics; we propose mechanics
-ablations as a standard robustness pass.
+seed-paired statistics, an expanding 8-window walk-forward protocol,
+Jobson--Korkie--Memmel tests on daily returns, and controls that match
+training mechanics, regularisation, and hyperparameters across arms. The
+headline is an audit result: \textbf{once these are controlled, no
+architectural difference survives}. A no-gate baseline matches both gated
+variants on the single-period protocol (Sharpe 0.40 vs.\ 0.42/0.46,
+within seed noise) and on the walk-forward (1.27 vs.\ 1.27/1.11), where
+frequent retraining substitutes for regime awareness. An apparent
+soft-over-hard dominance (0.46 vs.\ 0.14) dissolved when a regularisation
+asymmetry was matched (0.46 vs.\ 0.42); hard switching's seed instability
+was likewise regularisation-driven, not architectural. What does survive
+every pass: the learned router is the worst and least stable variant
+under both algorithms --- a stable, separately estimated regime signal
+beats jointly learned routing --- and a hand-crafted HMM-gated
+equal-weight rule \emph{destroys} value (Sharpe 0.41 $\rightarrow$ 0.16),
+so the signal is not directly monetizable either. Along the way we
+dissolve an internally consistent, statistically significant pro-gating
+narrative manufactured by a sliding-window update scheme (a drawdown
+advantage at $p{=}0.0025$, a walk-forward ranking, a COVID stress-test
+story), and we identify measurable mechanisms behind the null:
+near-one-hot posteriors that make soft and hard gating coincide on
+${\sim}80\%$ of days, a $20\times$ gradient-occupancy imbalance that
+starves rare-regime experts, regime features recoverable from the
+agent's own state, and an always-fully-invested single-asset-class
+action space that cannot express regime rotation. Architectural
+comparisons in RL finance can be artifacts of training mechanics and
+asymmetric tuning; we propose mechanics-and-regularisation ablations,
+plus a no-gate control, as a standard robustness pass.
 \end{abstract}
 
 \begin{CCSXML}
@@ -136,36 +141,49 @@ signal) --- a separation whose value the learned-router ablation directly
 quantifies.
 
 Because RL results in finance are notoriously fragile, we subject every
-claim to three robustness passes that we believe should be standard:
+claim to four robustness passes that we believe should be standard:
 (a)~\textbf{algorithm robustness} --- every comparison is run under both
 A2C~\cite{mnih2016a2c} and PPO~\cite{schulman2017ppo}, which differ exactly
 in trust-region control; (b)~\textbf{seed-paired statistics} --- all
 variants share seeds, so we use paired $t$ and Wilcoxon signed-rank tests,
 plus Jobson--Korkie--Memmel~\cite{jobson1981,memmel2003} tests on daily
-returns; and (c)~\textbf{mechanics robustness} --- we re-ran the full
+returns; (c)~\textbf{mechanics robustness} --- we re-ran the full
 comparison after replacing a stride-1 sliding-window update buffer with
-non-overlapping batches, and report which claims survived. One headline
-claim did not: soft gating's maximum-drawdown advantage, the most
-statistically significant result under the original mechanics
-($p{=}0.0025$, paired), reversed sign under the corrected mechanics under
-\emph{both} algorithms. We report this openly as a contribution:
-architectural conclusions in RL-for-finance can be manufactured by the
-update scheme, and mechanics ablations belong in the evaluation protocol.
+non-overlapping batches; and (d)~\textbf{tuning symmetry} --- we re-ran
+the comparison after matching a regularisation coefficient that had been
+tuned per-arm during development, and re-ran the walk-forward soft arm at
+its tuned hyperparameters. Successive passes dissolved successive claims.
+Soft gating's maximum-drawdown advantage --- the most statistically
+significant result under the original mechanics ($p{=}0.0025$, paired) ---
+reversed sign under corrected batching; its risk-adjusted-return
+advantage survived the mechanics fix but collapsed to a tie under matched
+regularisation; and a no-gate control landed inside the same band as both
+gated variants on both protocols. We report this trajectory openly as the
+paper's central contribution: architectural conclusions in RL-for-finance
+can be manufactured by the update scheme and by asymmetric tuning, and
+the controls that catch this belong in the evaluation protocol.
 
 \textbf{Contributions.}
 (1)~The first controlled comparison, within one RL portfolio framework, of
-an externally supplied regime gate, a discretised version of the same gate,
-and a learned end-to-end router.
-(2)~An algorithm-robustness result: the learned router is the worst and
-least stable variant under both A2C and PPO, while the soft-vs-hard gap is
-algorithm-\emph{dependent} --- large without trust-region control, a tie
-with it.
-(3)~A ``why RL at all'' baseline: hand-crafted rules on the same HMM signal
-destroy value, while the soft-gated agent beats plain equal-weight on the
-single-period protocol.
-(4)~A reproducibility case study: a training-mechanics artifact that
-produced a spurious $p{=}0.0025$ architectural claim, and the protocol that
-caught it.
+an externally supplied regime gate, a discretised version of the same
+gate, a learned end-to-end router, and a no-gate control --- under matched
+mechanics, regularisation, and seeds. The result is a robust null: no
+gating mechanism measurably beats no gate, on either evaluation protocol.
+(2)~The one architecture-level finding that survives every pass: the
+learned router is the worst and least stable variant under both A2C and
+PPO --- external, separately estimated regime signals beat jointly
+learned routing.
+(3)~A mechanism analysis of the null with measured quantities: the HMM
+posterior is one-hot ($>0.99$) on ${\sim}80\%$ of days, rare-regime
+expert heads receive $20\times$ less gradient mass, the gate's features
+are recoverable from the agent's own state, and the fully-invested
+equity-only action space cannot express the regime rotation the signal
+is informative about.
+(4)~A reproducibility case study: six publishable-looking claims ---
+including a spurious $p{=}0.0025$ drawdown advantage and a COVID
+stress-test story --- dissolved one by one under mechanics correction,
+regularisation matching, hyperparameter parity, and a no-gate control,
+with the full audit trail reported.
 
 %% ===================================================================
 \section{Related Work}
@@ -257,7 +275,9 @@ $38{\times}38$ return covariance (1{,}444) plus MACD/RSI/CCI/ADX per asset
 actor uses it. All actors share a two-layer 256-unit ReLU MLP trunk and a
 state-independent log-std Gaussian head.
 
-\textbf{Baseline (no gate).} Single Gaussian head, no regime input.
+\textbf{Baseline (no gate).} Single Gaussian head; the regime slot in
+the state is replaced by a constant, so state dimensionality is
+identical and the arm is a pure information-removal control.
 
 \textbf{Hard RA-RL.} The MAP label (scalar) is appended; four specialist
 heads share the trunk; the label masks all but one head per step, so only
@@ -307,10 +327,16 @@ was corrected, under both algorithms
 (Section~\ref{sec:results-mechanics}). All results in this paper use the
 corrected mechanics unless explicitly marked otherwise.
 
-One residual asymmetry is disclosed: the L2 weight-penalty coefficient
-was tuned per architecture during development (0.5 for Baseline/Hard,
-0.01 for Soft/Router). \pending{L2-matched control run (Hard at 0.01)
-queued; will either defuse or re-scope this limitation}
+One development asymmetry required its own control: the L2
+output-penalty coefficient had been tuned per architecture (0.5 for
+Hard, 0.01 for Soft/Router). Because this penalty shrinks raw policy
+outputs toward zero --- which the simplex projection maps toward equal
+weights --- it is a de-facto regulariser toward $1/N$ and plausibly
+consequential. Section~\ref{sec:results-single} reports the matched
+control (Hard re-run at 0.01, shared seeds): the asymmetry, not the
+architecture, accounted for both the apparent soft dominance and hard
+switching's seed instability. All matched-arm comparisons in this paper
+use L2${=}0.01$ unless marked otherwise.
 
 %% ===================================================================
 \section{Experimental Setup}
@@ -351,54 +377,69 @@ headline table}
 \section{Results}
 %% ===================================================================
 
-\subsection{Single-Period: Soft vs.\ Hard under A2C}
+\subsection{Single-Period: the Gap Dissolves under Matched
+Regularisation, and No Gate Matches Both Gates}
 \label{sec:results-single}
 
-Table~\ref{tab:single-a2c} reports the corrected-mechanics single-period
-comparison. Three patterns emerge. First, \textbf{soft gating dominates
-in effect size}: Sharpe 0.462 vs 0.142, return $+26.2\%$ vs $+0.3\%$,
-with soft winning two of three seed-pairs. At $n{=}3$ pairs these gaps
-are not individually significant (paired $t$ $p_1{\approx}0.18$;
-Wilcoxon's floor at $n{=}3$ is $0.125$); we report effect sizes and
-per-seed behaviour rather than overclaiming.\footnote{Under the
-\emph{original} mechanics this comparison was significant on all four
-metrics at pooled $n{=}9$ --- but Section~\ref{sec:results-mechanics}
-shows why we do not rest claims on those runs.} Second, \textbf{Hard
-RA-RL is seed-unstable} (Figure~\ref{fig:seed-dots}): two of three seeds
-collapse to negative Sharpe even under corrected mechanics, while every
-soft seed is positive and
-soft's dispersion is smaller on every ratio metric --- the instability
-is a property of discrete switching under A2C, not an artifact of the
-earlier update-scheme bug. Third, \textbf{the drawdown ordering is
-reversed relative to the original mechanics} (Hard $48.9\%$ vs Soft
-$57.2\%$, reversed in all three seed-pairs): see
-Section~\ref{sec:results-mechanics}.
+Table~\ref{tab:single-a2c} tells the single-period story in three
+columns. At the \emph{development} configuration (Hard at L2${=}0.5$,
+Soft at 0.01), soft gating appears dominant: Sharpe 0.462 vs.\ 0.142,
+return $+26.2\%$ vs.\ $+0.3\%$, every soft seed positive while two of
+three hard seeds collapse.\footnote{Under the \emph{original} update
+mechanics this comparison was significant on all four metrics at pooled
+$n{=}9$ --- Section~\ref{sec:results-mechanics} shows why we do not rest
+claims on those runs.} This is the kind of result that gets published.
+It does not survive its own control experiment.
+
+\textbf{Matching the regularisation closes the gap.} Re-running Hard at
+Soft's L2${=}0.01$, same seeds, moves it to Sharpe $0.422\pm0.282$ ---
+a statistical dead heat with Soft on every metric (paired Sharpe
+$p_1{=}0.44$; seed-pairs split 2--1). The seed instability also
+vanishes: all three Hard seeds are positive at 0.01 (minimum $+0.126$),
+so ``discrete switching is unstable under A2C'' was in fact ``L2${=}0.5$
+is a bad setting.'' Notably, \emph{which} seed performs best flips with
+the coefficient (Hard's only good seed at 0.5 becomes its worst at
+0.01) --- the seed-level landscape is regularisation-dependent, another
+warning against reading architecture from few-seed comparisons.
+
+\textbf{The no-gate control lands in the same band.} The information-
+removal baseline scores Sharpe $0.402$ (seeds: 0.256, 0.548; third seed
+pending compute and marked in Appendix~\ref{app:perseed}). Paired deltas
+on shared seeds are $+0.006$ and $+0.187$ (Soft$-$Baseline) and $+0.432$,
+$-0.096$ (Hard$-$Baseline) --- small relative to the ${\sim}0.25$ seed
+noise, with unstable sign. \textbf{On the protocol where a regime gate
+should pay most --- train once, generalise across an unseen
+bear-plus-recovery --- removing the regime signal entirely does not
+measurably hurt.}
 
 \begin{figure}[t]
 \centering
 %\includegraphics[width=\linewidth]{figures/seed_sharpe_dots.png}
-\caption{Per-seed test Sharpe under both algorithms (3 shared seeds;
-bars are means). Under A2C, two of three hard seeds go negative while
-every soft seed is positive; under PPO both gated variants are rescued
-and the learned router's collapse persists.
-\pending{copy figures/seed\_sharpe\_dots.png into the project and
-uncomment}}
+\caption{Per-seed test Sharpe under both algorithms (shared seeds; bars
+are means). At development settings two of three hard seeds go negative;
+at matched L2 all arms --- including the no-gate baseline --- overlap.
+Under PPO the learned router's collapse persists.
+\pending{regenerate seed\_sharpe\_dots with Hard@0.01 + Baseline panels
+(make\_icaif\_plots.py), copy in, uncomment}}
 \label{fig:seed-dots}
 \end{figure}
 
 \begin{table}[t]
 \caption{Single-period test (2022--2024), corrected mechanics, A2C,
-1000 epochs, $n{=}3$ shared seeds; one-tailed paired $t$ in the
-soft-favoured direction (for max drawdown, soft-lower).}
+1000 epochs, shared seeds ($n{=}3$; Baseline $n{=}2$, third seed
+pending). Hard is shown at its development L2 (0.5) and matched to
+Soft's (0.01).}
 \label{tab:single-a2c}
-\begin{tabular}{lccc}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcccc}
 \toprule
-Metric & Hard RA-RL & Soft RA-RL & paired $p_1$ \\
+Metric & Hard@0.5 & Hard@0.01 & Soft & Baseline \\
 \midrule
-Return (\%)        & $+0.3 \pm 28.0$   & $+26.2 \pm 29.8$  & $0.21$ \\
-Sharpe             & $0.142 \pm 0.364$ & $0.462 \pm 0.245$ & $0.18$ \\
-Max drawdown (\%)  & $48.9 \pm 3.9$    & $57.2 \pm 2.9$    & $0.92$ \\
-Sortino            & $0.144 \pm 0.364$ & $0.469 \pm 0.242$ & $0.18$ \\
+Return (\%)  & $+0.3 \pm 28.0$   & $+20.6 \pm 27.7$  & $+26.2 \pm 29.8$  & $+18.2 \pm 21.2$ \\
+Sharpe       & $0.142 \pm 0.364$ & $0.422 \pm 0.282$ & $0.462 \pm 0.245$ & $0.402 \pm 0.206$ \\
+Max DD (\%)  & $48.9 \pm 3.9$    & $51.4 \pm 10.2$   & $57.2 \pm 2.9$    & $56.1 \pm 9.3$ \\
+Sortino      & $0.144 \pm 0.364$ & $0.422 \pm 0.283$ & $0.469 \pm 0.242$ & $0.389 \pm 0.191$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -406,20 +447,23 @@ Sortino            & $0.144 \pm 0.364$ & $0.469 \pm 0.242$ & $0.18$ \\
 \subsection{Learned Router: Collapse under Both Algorithms}
 \label{sec:results-router}
 
-Under A2C, the router produced large negative returns on two of three
+Under A2C (original-mechanics campaign; the corrected-A2C router re-run
+is queued), the router produced large negative returns on two of three
 seeds ($-19.0\%$, $-15.1\%$) and a negative mean Sharpe ($-0.060$),
-below even the regime-agnostic baseline. Under PPO
-(Table~\ref{tab:ppo}), the pattern \emph{replicates}: seed 2 collapses
-($-27.8\%$, Sharpe $-0.281$), and the router's variance is
-$1.6$--$2.5\times$ that of either gated variant on every metric. Ranking
-Soft $>$ Hard $>$ Router holds under both algorithms. This is the
-strongest cross-algorithm result in the paper: \textbf{jointly learning
-the routing function destabilises training relative to consuming a
-stable, separately estimated signal --- independently of the policy
-optimiser}. \pending{extra PPO router/soft seeds ($n{=}3\rightarrow6$)
-queued; current Soft-vs-Router $p_1\approx0.11$--$0.15$}
+below even the regime-agnostic baseline. Under PPO --- corrected-era,
+with trust-region control (Table~\ref{tab:ppo}) --- the pattern
+\emph{replicates}: seed 2 collapses ($-27.8\%$, Sharpe $-0.281$), and
+the router's variance is $1.6$--$2.5\times$ that of either gated variant
+on every metric. Both gated variants beat the router under both
+algorithms. This is the one architecture-level result that survives
+every control in the paper: \textbf{jointly learning the routing
+function destabilises training relative to consuming a stable,
+separately estimated signal --- independently of the policy optimiser}.
+\pending{extra PPO router/soft seeds ($n{=}3\rightarrow6$) queued;
+current Soft-vs-Router $p_1\approx0.11$--$0.15$}
 
-\subsection{Algorithm Robustness: PPO Localises Where Soft Gating Pays}
+\subsection{Algorithm Robustness: the Optimiser Moves Results More than
+the Architecture}
 \label{sec:results-ppo}
 
 \begin{table}[t]
@@ -439,17 +483,21 @@ Sortino           & $0.739 \pm 0.230$ & $0.794 \pm 0.236$ & $0.331 \pm 0.552$ \\
 \end{tabular}
 \end{table}
 
-Under PPO the Soft-vs-Hard Sharpe gap closes to a statistical tie
-(0.774 vs 0.726) and Hard's seed instability disappears. We interpret
-this mechanistically rather than as a failure to replicate: A2C applies
-unconstrained on-policy updates, and discrete head-switching is
-maximally exposed to them --- each head trains on roughly a quarter of
-the signal density, and the trunk's gradient character switches abruptly
-with the active head. PPO's clipped objective bounds per-update policy
-movement and thereby \emph{rescues} discrete switching. The practical
-design rule: \textbf{soft gating buys the most when the optimiser lacks
-trust-region control; with PPO, the cheaper hard switch is competitive
-on risk-adjusted return} (though the router remains broken under both).
+Under PPO the Soft-vs-Hard Sharpe gap is a statistical tie (0.774 vs
+0.726) and Hard's seed instability is absent. In hindsight, PPO was
+telling us early what the L2-matched control later confirmed: the PPO
+arms carried the \emph{same} regularisation asymmetry (Hard at 0.5, Soft
+at 0.01), yet tied anyway --- the clipped objective bounds per-update
+policy movement and thereby suppresses sensitivity to the mis-set
+coefficient that A2C's unconstrained updates amplify. Two lessons
+follow. First, \textbf{the optimiser moved results far more than any
+architecture did}: switching A2C$\rightarrow$PPO lifts every variant by
+${\sim}{+}0.3$ Sharpe, an order of magnitude larger than the largest
+matched-arm architecture gap (${\sim}0.04$--$0.06$). Second, a
+methodological caution: \textbf{stability under a trust-region method
+cannot be read as evidence that a configuration is sound} --- PPO masked
+a regularisation problem that A2C exposed, and only the matched control
+identified its true source.
 
 \subsection{Walk-Forward Validation}
 \label{sec:results-wf}
@@ -465,6 +513,23 @@ $z{=}{-}0.60$, $p{=}0.55$). Equal weight remains the aggregate winner
 (1.645, lowest drawdown) --- the only significant aggregate fact in the
 protocol (vs.\ S\&P~500, $p{=}0.0078$).
 
+A hyperparameter-parity check strengthens the null. The walk-forward
+trained all arms at shared defaults (LR $10^{-4}$, L2 0.5); one might
+object that Soft's tuned single-period configuration (LR
+$3{\times}10^{-5}$, L2 0.01) would fare better. Re-running the soft arm
+at exactly that configuration, same seeds and budget, made it
+\emph{worse}: mean Sharpe 0.73 vs.\ 1.08 over the first seven windows,
+now significantly below the no-gate baseline (Wilcoxon $p{=}0.016$),
+including a $-53\%$ blow-up in the 2022 bear-onset window where the
+looser regularisation permitted concentrated positions exactly when the
+HMM's regime typing was most wrong (see below). The walk-forward null is
+robust to hyperparameter choice --- if anything the shared defaults
+flattered the gated arm --- and the check illustrates a transfer
+failure worth naming: \textbf{hyperparameters tuned under one evaluation
+protocol do not transfer to another} (a configuration tuned for
+1000-epoch single-period training undertrains and under-regularises
+300-epoch expanding windows).
+
 Two window-level claims from the original (pre-correction) version of
 this study die here, and we report them as cautionary results. First,
 the COVID window: under the original mechanics, Soft appeared uniquely
@@ -479,16 +544,20 @@ Hard nominally least-bad --- descriptive only, as between-method
 transition differences are not significant.
 
 \textbf{Synthesis with Section~\ref{sec:results-single}.} The two
-protocols answer different questions, and together they localise when
-regime-aware architecture pays. Trained \emph{once} on seven years and
-asked to survive an unseen bear-plus-recovery (single-period), soft
-gating shows a large advantage and hard switching is unstable. Retrained
-\emph{every six months} on an expanding window (walk-forward), no gated
-variant beats the no-gate baseline: \textbf{frequent retraining
-substitutes for regime awareness}, because the policy's weights already
-track the recent regime. Regime conditioning is a mechanism for
-policies that must generalise across regime shifts they cannot be
-retrained through.
+protocols now agree: with mechanics corrected and regularisation
+matched, no gated variant measurably beats the no-gate control on
+either. An earlier draft of this study read the single-period soft
+advantage as evidence that gating pays precisely when a policy must
+generalise across regime shifts it cannot be retrained through; the
+matched-regularisation control and the no-gate baseline dissolved that
+reading. What survives is the weaker but well-supported observation
+that \textbf{frequently retrained policies carry recent-regime
+information in their weights} --- every RL arm, gated or not, posts
+high absolute walk-forward Sharpe because six-monthly refitting keeps
+it adapted --- so any residual value of an explicit gate must be sought
+where retraining is infrequent relative to regime turnover, and our
+single-period test bounds that value at below seed noise for this
+system.
 
 \begin{table}[t]
 \caption{Walk-forward aggregate (8 windows $\times$ 2 seeds, corrected
@@ -518,10 +587,12 @@ from 0.41 to 0.16 (hard rule) or 0.19 (soft rule), while the soft-gated
 RL agent's mean Sharpe (0.462) exceeds plain equal weight --- though the
 latter comparison is seed-dependent (one of three seeds drives it) and
 we claim it only at the mean level. On the walk-forward protocol the
-rule is likewise (mildly) value-destroying. The asymmetry is the point:
-the same signal that \emph{loses} money under the obvious fixed rule
-adds value when the mapping from regime to allocation is
-\emph{learned} --- which assets, how much, when.
+rule is likewise (mildly) value-destroying. The rule's failure closes
+the last escape route for the signal: it is not directly monetizable by
+a transparent strategy, and Section~\ref{sec:results-single} shows the
+learned agents extract no measurable value from it either --- the RL
+arms' performance comes from what they learn about the assets, not from
+the regime label.
 
 \begin{table}[t]
 \caption{HMM-gated equal-weight rules vs.\ plain 1/N (Sharpe).}
@@ -538,7 +609,7 @@ Soft RA-RL (single-period) & \multicolumn{3}{c}{$0.462 \pm 0.245$ ($n{=}3$ seeds
 \end{tabular}
 \end{table}
 
-\subsection{The Mechanics Artifact}
+\subsection{The Artifact Audit: Mechanics, then Regularisation}
 \label{sec:results-mechanics}
 
 Under the original stride-1 sliding-window updates, Soft RA-RL showed a
@@ -547,9 +618,11 @@ significant result in the study (23.8\% vs 36.2\%, paired
 $p{=}0.0025$, $n{=}9$). Under non-overlapping batches the ordering
 \emph{reverses} under A2C (Hard $48.9\%$ vs Soft $57.2\%$, reversed in
 all three seed-pairs) --- and independently reverses under PPO (36.4\%
-vs 41.7\%), which never used the sliding buffer. The risk-adjusted-return
-advantage, by contrast, survives the correction under A2C in direction
-and effect size (Table~\ref{tab:single-a2c}).
+vs 41.7\%), which never used the sliding buffer. The
+risk-adjusted-return advantage survived the mechanics correction in
+direction and effect size --- and then collapsed to a tie under the
+matched-L2 control (Table~\ref{tab:single-a2c}). Each control caught
+what the previous one could not.
 
 The walk-forward protocol was hit even harder. Under the original
 mechanics the no-gate baseline appeared broken (aggregate Sharpe 0.35),
@@ -557,17 +630,23 @@ Soft ranked best among RL variants (1.35), and Soft looked uniquely
 crisis-robust in the COVID window --- three findings that together made
 a clean pro-regime-gating story. Correcting the update scheme repaired
 the \emph{baseline} most of all (0.35 $\rightarrow$ 1.27) and dissolved
-all three claims (Section~\ref{sec:results-wf}). In total, four
-publishable-looking results --- the drawdown advantage, the walk-forward
-ranking, the COVID stress-test story, and Hard's H2-2022 anomaly ---
-were artifacts of one update-scheme choice orthogonal to the
-architectures under study. The lesson we draw is methodological:
-\textbf{training-mechanics choices can manufacture an internally
-consistent, statistically significant, but false architectural
-narrative, and only a mechanics re-run catches it.} We recommend
-mechanics ablations --- at minimum, buffer/batching variants --- as a
-standard robustness pass for RL-in-finance comparisons, alongside seeds
-and algorithm changes.
+all three claims (Section~\ref{sec:results-wf}).
+
+The full ledger is worth stating plainly. Six publishable-looking
+results --- (i) the significant drawdown advantage, (ii) the
+walk-forward ranking, (iii) the COVID stress-test story, (iv) Hard's
+anomalous H2-2022 spike, (v) soft-over-hard risk-adjusted dominance,
+and (vi) Hard's seed instability --- were artifacts of, respectively,
+one update-scheme choice (i--iv) and one asymmetrically tuned
+regularisation coefficient (v--vi), both orthogonal to the
+architectures nominally under study. The lesson is methodological:
+\textbf{training-mechanics and tuning-symmetry choices can manufacture
+an internally consistent, statistically significant, but false
+architectural narrative --- and each layer of it is only caught by the
+corresponding control.} We recommend mechanics ablations, matched
+per-arm regularisation, and a no-gate control as standard robustness
+passes for architectural claims in RL for finance, alongside seeds and
+algorithm changes.
 
 %% ===================================================================
 \section{Discussion}
@@ -587,36 +666,73 @@ not survive the correction (Section~\ref{sec:results-wf}); in the
 corrected walk-forward the RL variants beat 1/N in W1 (all ${\geq}0.68$
 vs 0.33) but 1/N wins the aggregate.
 
-\subsection{Interpretation: When Does a Regime Gate Pay?}
-Four results triangulate one design principle. The router's
-cross-algorithm collapse says regime \emph{detection} should be
-external and stable, not jointly learned. The PPO tie says the
-\emph{exploitation} mechanism (hard vs soft) matters mainly when the
-optimiser is unconstrained. The gated-rule failure says exploitation
-must be \emph{learned} --- the signal alone is not alpha. And the
-walk-forward null says the gate only pays when the policy must
-\emph{generalise across} regime shifts it cannot be retrained through:
-with six-monthly retraining on expanding data, the network's weights
-already encode the recent regime, and the gate is redundant. Together:
-detect externally, exploit by learning, blend smoothly when training
-lacks trust-region control --- and expect the benefit precisely in
-deployment settings where retraining is infrequent relative to regime
-turnover.
+\subsection{Interpretation: Why Doesn't the Gate Pay Here?}
+\label{sec:interpretation}
+The null is not mysterious; four measurable mechanisms account for it,
+and each points at a condition a regime gate would need to be useful.
+\textbf{(1)~The posterior is nearly always one-hot.} The HMM's
+smoothed posterior exceeds 0.99 on 78--85\% of test days, so soft
+blending degenerates to hard switching almost everywhere; the
+mechanisms can only differ on a handful of transition days ---
+precisely the days on which the detector is least reliable. (2)~\textbf{The
+regime features are recoverable from the state.} The HMM consumes
+20-day rolling volatility, momentum, mean return, and average pairwise
+correlation; the agent's state contains the full 20-day return
+covariance --- from which volatility and correlation are directly
+computable --- plus momentum-type indicators, over the same window. The
+gate therefore adds little information the trunk cannot synthesise
+internally, which is exactly what the information-removal baseline
+finds. (3)~\textbf{Rare-regime experts are starved.} Because each
+head's gradient is scaled by its regime's posterior mass, and
+train-period occupancy is $[0.025, 0.19, 0.28, 0.51]$ across the four
+states, the bear head receives ${\sim}20\times$ less training signal
+than the bull head --- specialist heads decay toward clones of the
+majority policy. (4)~\textbf{The action space cannot spend regime
+knowledge.} The agent must hold $\sum_i w_i = 1$ in equities at all
+times (5\% max short per name); regime information of the kind an HMM
+on bonds, commodities, and credit provides is asset-\emph{allocation}
+information, and the classical channel through which regime knowledge
+pays --- risk-off rotation~\cite{ang2002regimes} --- is not expressible.
+In 2022, when equity--bond correlation inverted, every fully-invested
+variant drew down 49--63\% regardless of architecture.
+
+The router's cross-algorithm collapse and the gated-rule failure still
+carry design content: regime \emph{detection}, if used, should be
+external and stable rather than jointly learned, and no transparent
+rule monetises the signal directly. But conditions (1)--(4) define what
+a system would need before an architectural comparison of gates is even
+meaningful: a calibrated detector that is uncertain when it should be,
+regime features not already in the state, balanced training across
+regimes, and an action space spanning the regimes' optimal portfolios.
+We conjecture --- and leave as future work --- that multi-asset
+universes with risk-off assets are where regime gating has its best
+chance of measurable value.
 
 \subsection{Limitations}
 (1)~Single asset class and fixed 38-stock universe with survivorship
-bias; frictionless execution beyond a linear turnover penalty.
-(2)~The L2 coefficient asymmetry (Section~\ref{sec:mechanics});
-\pending{resolved by the L2-matched run if it completes}.
-(3)~Walk-forward uses 2 seeds per window; Wilcoxon at $n{=}8$ windows
-has a $p$-floor of 0.0078.
+bias; frictionless execution beyond a linear turnover penalty. As
+Section~\ref{sec:interpretation} argues, this setting also bounds how
+much any regime signal \emph{could} pay --- our null is a statement
+about this class of system, not about regime information in general.
+(2)~Small seed counts: $n{=}3$ single-period ($n{=}2$ for the
+baseline's third seed, pending compute), so effects below
+${\sim}0.2$--$0.3$ Sharpe are undetectable there; the walk-forward
+($n{=}8$ windows, JK--Memmel on ${\sim}1000$ daily returns) carries the
+inferential weight. Wilcoxon at $n{=}8$ has a $p$-floor of 0.0078.
+(3)~Test-period regime posteriors use forward--backward smoothing over
+the full series (the hmmlearn default), a mild lookahead: measured
+$L_1$ deviation from causal filtering is 0.08--0.13 with 4--8\% of MAP
+labels flipped. The bias \emph{favours} the gated variants, so the
+nulls hold a fortiori.
 (4)~The evaluation window (2020--2024) contains exactly one
 flight-to-quality crash and one rate-driven bear; a probe of fixed
 defensive-rotation rules shows they help in the former (+0.30
 window Sharpe, COVID) and destroy value in the latter ($-1.21$, 2022,
 JK--Memmel $p{=}0.042$ against the rule) --- regime \emph{type}
-matters, motivating multi-asset extensions with richer regime
-detection as future work.
+matters. Relatedly, the HMM fitted through 2021 assigns the 2022 bear
+${\sim}0\%$ bear-state probability (it presents as ``sideways-down''),
+so the detector is confidently wrong in the test period's hardest
+stretch.
 (5)~Absolute Sharpe levels are modest by institutional standards; the
 comparison is relative, under an identical reward.
 
@@ -625,28 +741,35 @@ comparison is relative, under an identical reward.
 %% ===================================================================
 
 Given an external HMM regime signal, we compared hard switching, soft
-posterior gating, and end-to-end learned routing for RL portfolio
-policies, under two optimisers, two evaluation protocols, seed-paired
-statistics, and a training-mechanics ablation. The learned router is
-the worst and least stable variant under both A2C and PPO --- anchor
-the gate to a stable, separately estimated signal. Soft gating's
-advantage over hard switching is real but doubly conditional: large
-under unconstrained A2C updates yet a tie under PPO's clipped
-objective, and present only when the policy is trained once and must
-generalise across unseen regime shifts --- under six-monthly
-walk-forward retraining, no gated variant beats a no-gate baseline,
-because frequent retraining substitutes for regime awareness.
-Hand-crafted rules on the same signal destroy value, so the signal pays
-only through learned exploitation. And an entire pro-gating narrative
-of our own early results --- a significant drawdown advantage, a
-walk-forward ranking, a COVID stress-test story --- proved to be
-artifacts of a sliding-window update buffer, dissolving under corrected
-mechanics. We offer the full protocol (paired seeds, two algorithms,
-two protocols, mechanics ablation, rule baseline) as a template for
-architectural claims in RL for finance. Future work: multi-asset
-regime rotation with bear-type-aware detection, differential-Sharpe
-rewards~\cite{moody2001}, and off-policy algorithms (a SAC suite is
-implemented and calibrated; its full evaluation is deferred).
+posterior gating, end-to-end learned routing, and a no-gate control for
+RL portfolio policies, under two optimisers, two evaluation protocols,
+seed-paired statistics, a training-mechanics ablation, and matched
+regularisation. Our central result is a carefully established null:
+\textbf{once mechanics, regularisation, and hyperparameters are
+controlled, no way of injecting the regime signal --- including not
+injecting it at all --- measurably changes performance}, on either
+protocol. What moved results, every time, was something else: the
+update scheme (six dissolved claims, one at $p{=}0.0025$), a per-arm
+regularisation coefficient, the optimiser (${+}0.3$ Sharpe from
+A2C$\rightarrow$PPO, dwarfing all architecture gaps), and the
+evaluation protocol. The findings that survive are the negative
+space: jointly learned routing is unstable under both optimisers
+(anchor any gate to an external signal), transparent rules on the same
+signal destroy value, and frequently retrained policies carry regime
+information in their weights without any gate. We further measure
+\emph{why} this system's gate cannot pay --- near-one-hot posteriors,
+$20\times$ expert-occupancy imbalance, state-redundant regime features,
+and a fully-invested single-asset-class action space that cannot
+express regime rotation --- conditions we propose as a checklist for
+when a regime-gating comparison is meaningful at all. We offer the
+full protocol (paired seeds, two algorithms, two protocols, mechanics
+ablation, tuning-symmetry control, no-gate control, rule baseline) as
+a template for architectural claims in RL for finance. Future work:
+multi-asset universes where risk-off rotation makes regime knowledge
+expressible~\cite{ang2002regimes}, bear-type-aware detection,
+remediated expert architectures (deeper heads, occupancy-balanced
+training), and off-policy algorithms (a SAC suite is implemented and
+calibrated; its full evaluation is deferred).
 
 %% ===================================================================
 %% Acknowledgments — SUPPRESSED for double-blind review. Restore for
@@ -675,9 +798,12 @@ WMT XOM.
 Adam; LR $10^{-4}$ (Baseline/Hard) and $3\times10^{-5}$ (Soft/Router),
 linearly annealed to $0.1\times$; $\gamma{=}0.99$; GAE $\lambda{=}0.95$
 with advantage normalisation; non-overlapping batch 20; value-loss
-coefficient 0.5; entropy 0.01; grad-clip 0.5; L2 penalty 0.5
-(Baseline/Hard) / 0.01 (Soft/Router); trunk $2\times256$ ReLU; 1000
-epochs. PPO: clip $\epsilon{=}0.2$, 10 optimisation epochs per rollout,
+coefficient 0.5; entropy 0.01; grad-clip 0.5; trunk $2\times256$ ReLU;
+1000 epochs. L2 output penalty: development values were 0.5
+(Baseline/Hard) / 0.01 (Soft/Router); the matched-control runs
+(Hard@0.01, Baseline@0.01, Table~\ref{tab:single-a2c}) use 0.01
+throughout. A residual asymmetry is disclosed: matched arms share
+L2 but not LR (Hard/Baseline $10^{-4}$, Soft $3\times10^{-5}$). PPO: clip $\epsilon{=}0.2$, 10 optimisation epochs per rollout,
 minibatch 64 over full-episode rollouts, LR $10^{-4}$ (all variants),
 same $\gamma$/GAE/value/entropy coefficients and LR annealing as A2C.
 Reward: $\lambda{=}0.5$, $c{=}10^{-4}$, $\kappa{=}0.005$, bounds
@@ -694,12 +820,18 @@ $[-0.05,0.20]$.
 \toprule
 Variant & Seed & Return (\%) & Sharpe & MaxDD (\%) & Sortino \\
 \midrule
-Hard & 0 & $-17.50$ & $-0.083$ & $50.72$ & $-0.080$ \\
-Hard & 1 & $-14.21$ & $-0.053$ & $51.54$ & $-0.053$ \\
-Hard & 2 & $+32.56$ & $+0.563$ & $44.36$ & $+0.565$ \\
-Soft & 0 & $+3.01$  & $+0.262$ & $57.17$ & $+0.267$ \\
-Soft & 1 & $+59.88$ & $+0.735$ & $54.40$ & $+0.737$ \\
-Soft & 2 & $+15.82$ & $+0.390$ & $60.12$ & $+0.403$ \\
+Hard@0.5  & 0 & $-17.50$ & $-0.083$ & $50.72$ & $-0.080$ \\
+Hard@0.5  & 1 & $-14.21$ & $-0.053$ & $51.54$ & $-0.053$ \\
+Hard@0.5  & 2 & $+32.56$ & $+0.563$ & $44.36$ & $+0.565$ \\
+Hard@0.01 & 0 & $+47.40$ & $+0.688$ & $39.67$ & $+0.690$ \\
+Hard@0.01 & 1 & $+22.30$ & $+0.452$ & $55.91$ & $+0.449$ \\
+Hard@0.01 & 2 & $-8.00$  & $+0.126$ & $58.53$ & $+0.126$ \\
+Soft      & 0 & $+3.01$  & $+0.262$ & $57.17$ & $+0.267$ \\
+Soft      & 1 & $+59.88$ & $+0.735$ & $54.40$ & $+0.737$ \\
+Soft      & 2 & $+15.82$ & $+0.390$ & $60.12$ & $+0.403$ \\
+Baseline  & 0 & $+3.26$  & $+0.256$ & $62.65$ & $+0.254$ \\
+Baseline  & 1 & $+33.20$ & $+0.548$ & $49.54$ & $+0.523$ \\
+Baseline  & 2 & \multicolumn{4}{c}{\pending{seed 2 queued (compute)}} \\
 \bottomrule
 \end{tabular}
 \end{table}

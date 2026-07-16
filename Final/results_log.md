@@ -1356,6 +1356,34 @@ and §11 (Hard ≈ Soft at matched L2):
 
 ---
 
+## 15. Multi-asset extension (MULTI_ASSET=1) — CODE READY, not yet run
+
+Design follows the §14b/§10f causal analysis: the equity-only,
+always-fully-invested action space (Σw=1, max 5% short/name) cannot
+express risk-off rotation — the channel through which regime knowledge
+classically pays (Ang–Bekaert 2002). `MULTI_ASSET=1` adds TLT/IEF/GLD/SHY
+(duration, gold, cash proxy) to the tradable universe in all three mains
+(hard/moe/baseline); 42 assets, state dim grows accordingly, everything
+else unchanged. Smoke-tested end-to-end (1 epoch, 42 assets, local).
+
+**Run as a full trio or not at all** (baseline/hard/moe, 3 seeds each,
+L2 0.01, ~19.5h/arm ≈ $7/arm rented or 75 units/arm). Pre-committed
+symmetric interpretation:
+- Gated arms > multi-asset Baseline (beyond seed noise) → regime gating
+  pays when the action space spans the regimes' optimal portfolios —
+  positive scoping claim ("when does a gate pay: when it can rotate").
+- Gated ≈ Baseline again → the null extends to the setting most
+  favourable to gating; audit conclusion maximally strong.
+Either result is reportable; the paper's §6.2 conjecture is written so
+both outcomes resolve it honestly. NOT a rescue of the equity-only
+claims — it is a new, separately-scoped experiment.
+
+Note: multi-asset Baseline still receives the constant regime column;
+EW/1/N benchmarks must be recomputed on the 42-asset universe for the
+comparison table.
+
+---
+
 ## Appendix — Hyperparameters in effect for Run B / Select_3 (Soft MoE)
 
 - LR = 3e-5, L2 coef = 0.01, advantage normalization enabled, epochs = 700

@@ -191,6 +191,15 @@ TICKER_LIST = sorted(list(set([
     'ABT',  'ABBV', 'MRK',
 ])))
 
+# Multi-asset extension (paper sec 6.2 conjecture): adds duration (TLT/IEF),
+# gold (GLD) and a cash proxy (SHY) so regime knowledge is expressible as
+# risk-off rotation -- the fully-invested equity-only action space cannot
+# spend it (results_log 14). Opt-in; default universe unchanged.
+if os.environ.get("MULTI_ASSET", "0") == "1":
+    TICKER_LIST = sorted(TICKER_LIST + ['TLT', 'IEF', 'GLD', 'SHY'])
+    print(f"MULTI_ASSET=1: universe extended to {len(TICKER_LIST)} assets "
+          "(+TLT/IEF/GLD/SHY)")
+
 TRAIN_START = "2015-01-01"
 TRAIN_END   = "2021-12-31"
 TEST_START  = "2022-01-01"

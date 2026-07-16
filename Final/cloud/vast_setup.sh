@@ -49,6 +49,15 @@ Router corrected-A2C (3 seeds, ~19.5h):
   nohup python -u run.py --variant router --seeds 3 --reward_mode mv \
       --epochs 1000 --tag bf > router_bf.out 2>&1 &
 
+Multi-asset (42 assets incl TLT/IEF/GLD/SHY; run all three arms, one per box;
+pre-committed interpretation in results_log 15 -- run ONLY as the full trio):
+  MULTI_ASSET=1 L2_COEF=0.01 nohup python -u run.py --variant baseline --seeds 3 \
+      --reward_mode mv --epochs 1000 --tag ma > ma_baseline.out 2>&1 &
+  MULTI_ASSET=1 L2_COEF=0.01 nohup python -u run.py --variant hard --seeds 3 \
+      --reward_mode mv --epochs 1000 --tag ma > ma_hard.out 2>&1 &
+  MULTI_ASSET=1 nohup python -u run.py --variant moe --seeds 3 \
+      --reward_mode mv --epochs 1000 --tag ma > ma_moe.out 2>&1 &
+
 Watch:      tail -f <logfile>
 Collect:    cd .. && zip -r results_$(hostname).zip Final/results Final/*.out
             then download the zip via the vast.ai file browser / scp, and
