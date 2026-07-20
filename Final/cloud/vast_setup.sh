@@ -27,9 +27,25 @@ assert torch.cuda.is_available(), "NO GPU VISIBLE -- wrong instance/image, destr
 print(f"torch {torch.__version__} | {torch.cuda.get_device_name(0)}")
 PY
 
-# Same package set as setup_cluster.sh (torch already present).
-pip install -q finrl hmmlearn gymnasium gym pandas numpy matplotlib \
-    scikit-learn scipy yfinance stockstats
+# Same package set as the cluster venv. FinRL is pinned to the SAME git
+# commit as requirements.txt (fee45af) -- a different FinRL version could
+# preprocess data differently and silently break comparability with the
+# cluster runs.
+pip install -q "finrl @ git+https://github.com/AI4Finance-Foundation/FinRL.git@fee45af12ee0af490cd8e091514173b571dcd9ed" \
+    hmmlearn gymnasium gym pandas matplotlib scikit-learn scipy yfinance stockstats
+
+# Fail fast: verify the exact imports the training code uses, and that
+# market data is downloadable from this host's IP (Yahoo rate-limits some
+# datacenter IPs). If either check fails, DESTROY this box and rent another.
+python3 - <<'PY'
+from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
+from finrl.meta.preprocessor.preprocessors import FeatureEngineer
+import hmmlearn, gym, stockstats
+df = YahooDownloader(start_date="2024-01-02", end_date="2024-01-10",
+                     ticker_list=["SPY", "TLT"]).fetch_data()
+assert len(df) > 5 and set(df.tic.unique()) == {"SPY", "TLT"}, f"bad download: {len(df)} rows"
+print(f"SANITY OK: finrl imports fine, downloaded {len(df)} rows for SPY+TLT")
+PY
 
 cd Final
 mkdir -p results
