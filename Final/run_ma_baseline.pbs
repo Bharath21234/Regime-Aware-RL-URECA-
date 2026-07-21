@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N URC_ma_base
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_ma_base.out
+#PBS -e URC_ma_base.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Multi-asset trio, arm 1/3: no-gate BASELINE on the 42-asset universe
+# (MULTI_ASSET=1 adds TLT/IEF/GLD/SHY so regime knowledge can express
+# risk-off rotation -- results_log 15). L2_COEF=0.01 matches the gated
+# arms. Pre-committed interpretation is symmetric (see results_log 15):
+# run as a full trio with run_ma_hard.pbs + run_ma_moe.pbs.
+#
+# Cost: ~7h/seed x 3 = ~21h; 24h requested (=90 units). Unused walltime
+# refunded on completion. If walltime-killed, finish the missing seeds:
+#   qsub -v SEEDS=1,SEED_START=2 run_ma_baseline.pbs
+#
+# Requires git pull (MULTI_ASSET flag + results/baseline_ma tag path).
+
+MULTI_ASSET=1 L2_COEF=0.01 python -u run.py --variant baseline \
+    --seeds ${SEEDS:-3} --seed_start ${SEED_START:-0} \
+    --reward_mode mv --epochs 1000 --tag ma

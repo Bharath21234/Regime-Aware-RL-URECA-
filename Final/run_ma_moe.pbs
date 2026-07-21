@@ -1,0 +1,29 @@
+#!/bin/bash
+#PBS -N URC_ma_moe
+#PBS -P spms_cspun
+#PBS -q gpu_a40
+#PBS -M BHARATH007@ntu.edu.sg
+#PBS -m abe
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -o URC_ma_moe.out
+#PBS -e URC_ma_moe.err
+
+module load anaconda2025/2025-gpu
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+source /home/bharath007/Regime-Aware-RL-URECA-/venv/bin/activate
+
+cd /home/bharath007/Regime-Aware-RL-URECA-/Final
+
+# Multi-asset trio, arm 3/3: SOFT MoE gating on the 42-asset universe.
+# L2 (0.01) and lr (3e-5) are hardcoded in main_moe.py -- no L2_COEF
+# needed here. Part of the trio; interpret with run_ma_baseline.pbs +
+# run_ma_hard.pbs. This is the arm the §15 conjecture is really about:
+# does soft gating finally beat no-gate once the action space can rotate?
+#
+# Cost: ~7h/seed x 3 = ~21h; 24h requested (=90 units). Finisher:
+#   qsub -v SEEDS=1,SEED_START=2 run_ma_moe.pbs
+
+MULTI_ASSET=1 python -u run.py --variant moe \
+    --seeds ${SEEDS:-3} --seed_start ${SEED_START:-0} \
+    --reward_mode mv --epochs 1000 --tag ma
